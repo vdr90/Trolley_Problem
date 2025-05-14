@@ -1,0 +1,179 @@
+---
+title: "Untitled"
+author: "Ivan García"
+date: "2025-05-05"
+output: html_document
+---
+
+DAGS: https://www.statistical-rethinking.robitalec.ca/week-7.html
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Paso 1: Preparar el entorno y los datos
+Primero cargamos los paquetes necesarios y el dataset.
+
+```{r}
+library(rethinking)
+data(Trolley)
+d <- Trolley
+```
+
+## Histograma
+
+```{r}
+simplehist( d$response , xlim=c(1,7) , xlab="response" )
+```
+
+## Cumulative probabilities
+
+```{r}
+# discrete proportion of each response value
+pr_k <- table( d$response ) / nrow(d)
+# cumsum converts to cumulative proportions
+cum_pr_k <- cumsum( pr_k )
+# plot
+plot( 1:7 , cum_pr_k , type="b" , xlab="response" ,
+ylab="cumulative proportion" , ylim=c(0,1) )
+```
+
+## Intercept parameters 
+
+```{r}
+logit <- function(x) log(x/(1-x)) # convenience function
+( lco <- logit( cum_pr_k ) )
+```
+
+## Basic model (no predictor variables) fitting
+
+```{r}
+m11.1 <- map(
+alist(
+response ~ dordlogit( phi , c(a1,a2,a3,a4,a5,a6) ),
+phi <- 0,
+c(a1,a2,a3,a4,a5,a6) ~ dnorm(0,10)
+) ,
+data=d ,
+start=list(a1=-2,a2=-1,a3=0,a4=1,a5=2,a6=2.5) )
+```
+
+
+```{r}
+precis(m11.1)
+```
+
+## Get cumulative probabilities back
+
+```{r}
+logistic(coef(m11.1))
+```
+
+Same as the values in cum_pr_k that we computed earlier. But
+now we also have a posterior distribution around these values, and we’re ready to add pre-
+dictor variables in the next section.
+
+```{r}
+# note that data with name 'case' not allowed in Stan
+# so will pass pruned data list
+m11.1stan <- ulam(
+  alist(
+    response ~ dordlogit(0, cutpoints),  # phi = 0 (modelo nulo)
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = list(response = d$response),
+  start = list(cutpoints = c(-2, -1, 0, 1, 2, 2.5)),
+  chains = 2, 
+  cores = 2
+)
+
+# Para ver los resultados
+precis(m11.1stan, depth = 2)
+
+```
+## Now we include predictor variables
+```{r}
+m11.2_stan <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bA * action + bI * intention + bC * contact,
+    c(bA, bI, bC) ~ dnorm(0, 10),
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = d,  # Mismo dataframe con las variables necesarias
+  start = list(cutpoints = c(-1.9, -1.2, -0.7, 0.2, 0.9, 1.8)),
+  chains = 2,  # Cadenas MCMC
+  cores = 2,   # Paralelización
+  iter = 1000  # Iteraciones por cadena
+)
+
+# Resumen del modelo
+precis(m11.2_stan, depth = 2)
+```
+## m11.3 Adds two interaction terms and two interaction parameters, bAI and bCI.
+
+```{r}
+m11.3_stan <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bA * action + bI * intention + bC * contact +
+           bAI * action * intention + bCI * contact * intention,
+    c(bA, bI, bC, bAI, bCI) ~ dnorm(0, 10),
+    cutpoints ~ dnorm(0, 10)  # Puntos de corte como vector
+  ),
+  data = d,
+  start = list(cutpoints = c(-1.9, -1.2, -0.7, 0.2, 0.9, 1.8)),
+  chains = 2,  # Número de cadenas MCMC
+  cores = 2,   # Paralelización
+  iter = 1000  # Iteraciones por cadena
+)
+
+# Resumen del modelo
+precis(m11.3_stan, depth = 2)
+```
+
+Now let’s compare these three models
+
+```{r}
+
+# Instalar si es necesario (solo una vez)
+# install.packages("rethinking")
+
+library(rethinking)
+
+# Usar precis() para cada modelo y combinar manualmente
+precis_m11.1 <- precis(m11.1stan, depth = 2)
+precis_m11.2 <- precis(m11.2_stan, depth = 2)
+precis_m11.3 <- precis(m11.3_stan, depth = 2)
+
+# Combinar resultados en una lista
+combined_results <- list(
+  m11.1 = precis_m11.1,
+  m11.2 = precis_m11.2,
+  m11.3 = precis_m11.3
+)
+
+# Imprimir comparación
+print(combined_results)
+
+```
+WAIC
+```{r}
+# Opción 1: Usar LOO-CV (recomendado)
+loo_compare(loo(m11.1stan), loo(m11.2_stan), loo(m11.3_stan))
+
+# Opción 2: Usar WAIC (alternativa clásica)
+compare(m11.1, m11.2, m11.3, func = WAIC)
+
+# Opción 3: Comparación visual con bayesplot
+library(bayesplot)
+posterior <- cbind(
+  as.matrix(m11.1)[,c("bA","bI","bC")],
+  as.matrix(m11.2)[,c("bA","bI","bC")],
+  as.matrix(m11.3)[,c("bA","bI","bC")]
+)
+mcmc_intervals(posterior)
+```
+
