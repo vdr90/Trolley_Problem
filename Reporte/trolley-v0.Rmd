@@ -26,7 +26,12 @@ library(kableExtra)
 library(rethinking)
 library(bayesplot)
 library(ggdag)
+library(dagitty)
+library(posterior)
+library(dplyr)
 #library(loo)
+
+
 ```
 
 ## Introducción
@@ -123,23 +128,40 @@ Antes de comenzar a crear modelos vamos a detenernos y reflexionar sobre las rel
 
 Para ello presentaremos algunos diagramas DAG y la relación que vemos entre las variables
 
-```{r, message=FALSE, warning=FALSE}
 
-# # Crear el DAG
-# dag <- dagify(
-#   response ~ education + age + action + intention + contact,
-#   exposure = c("action", "intention", "contact"),
-#   outcome = "response"
-# )
-# 
-# # Visualizarlo
-# ggdag(dag)
+```{r dag-colored-legend, message=FALSE, warning=FALSE}
+library(ggdag)
+library(dagitty)
+library(dplyr)
 
+dag <- dagify(
+  response ~ education + age + action + intention + contact,
+  education ~ age,
+  contact ~ action,
+  exposure = "education",
+  outcome = "response"
+)
+
+# Asignar tipos manualmente para forzar la leyenda
+dag_data <- tidy_dagitty(dag) %>%
+  mutate(status = case_when(
+    name == "education" ~ "exposure",
+    name == "response" ~ "outcome",
+    TRUE ~ "intermediate"
+  ))
+
+# Graficar con leyenda completa
+ggplot(dag_data, aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_dag_edges() +
+  geom_dag_node(aes(color = status), size = 12, alpha = 0.9) +
+  geom_dag_text(color = "black", fontface = "bold") +
+  theme_dag() +
+  scale_color_manual(
+    values = c("exposure" = "#7EA6E0", "outcome" = "#98D9C7", "intermediate" = "grey80"),
+    name = "Variable Type"
+  ) +
+  ggtitle("DAG eduacación y edad")
 ```
-
-::: {.center}
-![Casos y principios](Imagenes/DAG1.png){ width=50% }
-:::
 
 El gráfico dirigido acíclico (DAG) anterior representa la estructura causal hipotética que guía el análisis del juicio moral en el dilema del tranvía. En este modelo, la variable `response` es la variable de resultado, que representa el juicio moral emitido por los participantes. Este juicio está influenciado directamente por los tres factores principales del dilema: `action` (si el daño es causado por acción directa), `intention` (si el daño es intencionado como medio para lograr un fin), y `contact` (si hay contacto físico involucrado).
 
@@ -149,9 +171,39 @@ Este DAG permite identificar posibles caminos de confusión y justificar la incl
 
 **Agregando la variable de ´género´ al problema podríamos pensar en la siguiente historia
 
-::: {.center}
-![Casos y principios](Imagenes/DAG2.png){ width=50% }
-::: 
+```{r dag-education-match-style, message=FALSE, warning=FALSE}
+dag <- dagify(
+  response ~ education + age + action + intention + contact + gender,
+  education ~ age + gender,
+  contact ~ action,
+  exposure = "education",
+  outcome = "response",
+  coords = list(
+    x = c(
+      action = 0.5, contact = 1, intention = 2, education = 3.3,
+      age = 3, gender = 2.5, response = 2
+    ),
+    y = c(
+      action = 0.7, contact = 1.5, intention = 2.8, education = 1.8,
+      age = 2.5, gender = 0.5, response = 1.6
+    )
+  )
+)
+
+#dag$data$status[is.na(dag$data$status)] <- "intermediate"
+
+# DAG con estilo equivalente a tu imagen previa
+ggdag_status(dag, text = FALSE) +
+  geom_dag_text(color = "black", size = 4) +
+  theme_dag() +
+  scale_color_manual(values = c(
+    "exposure" = "#7EA6E0",        # azul claro
+    "outcome" = "#98D9C7",         # verde claro
+    "intermediate" = "gray60"      # gris
+  ),
+  breaks = c("exposure", "outcome", "intermediate") 
+)
+```
 
 Este DAG representa una hipótesis causal más amplia sobre los factores que influyen en el juicio moral (`response`) emitido en los dilemas del tranvía. Como en el modelo anterior, las variables `action`, `intention` y `contact` representan características centrales del dilema, que afectan directamente la respuesta moral. Además, se modela explícitamente que `action` puede conducir a `contact`, ya que el contacto físico ocurre únicamente si se toma una acción directa en el escenario.
 
@@ -475,8 +527,153 @@ Visualización
 ```
 
 
-## 4) Modelo
+## 4) Modelo educación sobre respuesta
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+m11.4_stan <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bA * action + bI * intention + bC * contact +
+           bAI * action * intention + bCI * contact * intention +
+           bE * edu,
+    c(bA, bI, bC, bAI, bCI, bE) ~ dnorm(0, 10),
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = d_clean,
+  start = list(cutpoints = c(-1.9, -1.2, -0.7, 0.2, 0.9, 1.8)),
+  chains = 2,
+  cores = 2,
+  iter = 1000
+)
 
+precis(m11.4_stan, depth = 2)
+```
+
+Podemos notar que los efectos de **acción** (`bA = -0.47`), **intención** (`bI = -0.28`), y **contacto** (`bC = -0.33`) muestran que estos factores disminuyen sistemáticamente la aprobación moral, con alta certeza (intervalos del 89% alejados de cero). Las interacciones también son relevantes: la interacción entre **acción e intención** (`bAI = -0.45`) y **contacto e intención** (`bCI = -1.27`) indican que la intención modula fuertemente el impacto de actuar o estar en contacto.
+
+Por otro lado, el efecto de **educación** (`bE = -0.04`) es pequeño y cercano a cero, sugiriendo que, en este modelo, la educación no tiene un efecto claro sobre el juicio moral una vez que se controlan los otros factores.
+
+
+```{r}
+# Extraer y seleccionar coeficientes
+posterior_samples <- extract.samples(m11.4_stan)
+draws_df <- data.frame(
+  Acción = posterior_samples$bA,
+  Intención = posterior_samples$bI,
+  Contacto = posterior_samples$bC,
+  Educación = posterior_samples$bE,
+  `Acción × Intención` = posterior_samples$bAI,
+  `Contacto × Intención` = posterior_samples$bCI
+)
+
+# Convertir a formato compatible
+draws_df <- as_draws_df(draws_df)
+
+# Graficar con estilo limpio
+color_scheme_set("blue")  # opcional: puedes probar con "viridis", "teal", etc.
+mcmc_areas(
+  draws_df,
+  prob = 0.89
+) +
+  ggplot2::labs(
+    title = "Distribuciones posteriores de los coeficientes",
+    x = "Valor estimado",
+    y = NULL
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+
+```
+
+El gráfico muestra las distribuciones posteriores de los coeficientes estimados en el modelo ordinal para la respuesta moral (escala 1 a 7). Las variables evaluadas fueron:
+
+- **Acción (bA)**: Tiene un efecto claramente negativo, lo que indica que tomar acción reduce la aprobación moral percibida. Su intervalo de credibilidad está lejos de cero, lo que sugiere alta certeza sobre su efecto.
+  
+- **Intención (bI)** y **Contacto (bC)**: También presentan efectos negativos consistentes, lo que sugiere que la intención y el contacto están asociados con menores juicios de corrección moral.
+
+- **Educación (bE)**: Su distribución está centrada muy cerca de cero y es muy estrecha, indicando un efecto nulo o muy débil sobre el juicio moral, cuando se controlan las demás variables.
+
+- **Interacción Acción × Intención (bAI)** y **Contacto × Intención (bCI)**: Estas interacciones muestran efectos adicionales negativos, especialmente `bCI`, que sugiere que cuando hay contacto y además intención, la desaprobación moral se intensifica notablemente.
+
+En conjunto, el modelo indica que los factores situacionales (como acción, intención, contacto y sus combinaciones) tienen mayor peso en los juicios morales que características individuales como la educación.
+
+
+```{r run-sampling, message=FALSE}
+fit <- mod$sample(
+  data = stan_data,
+  seed = 123,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000
+)
+
+# Extraer muestras
+draws <- fit$draws()
+```
+
+
+## 5)
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+m_simple <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bA * action +
+           bI * intention +
+           bC * contact +
+           bE * edu +
+           bG * age,
+    c(bA, bI, bC, bE, bG) ~ dnorm(0, 1),
+    cutpoints ~ dnorm(0, 1)
+  ),
+  data = d_clean,
+  start = list(cutpoints = c(-2, -1.5, -1, -0.5, 0.5, 1.5)),
+  chains = 4,
+  cores = 4,
+  iter = 2000
+)
+
+```
+
+
+
+```{r plot-m_simple, message=FALSE, warning=FALSE}
+# Extraer muestras
+posterior_samples <- extract.samples(m_simple)
+
+# Seleccionar y renombrar coeficientes
+draws_df <- data.frame(
+  Acción = posterior_samples$bA,
+  Intención = posterior_samples$bI,
+  Contacto = posterior_samples$bC,
+  Educación = posterior_samples$bE,
+  Edad = posterior_samples$bG
+)
+
+# Convertir a draws_df
+draws_df <- as_draws_df(draws_df)
+
+# Graficar con estilo limpio
+color_scheme_set("blue")
+mcmc_areas(
+  draws_df,
+  prob = 0.89
+) +
+  ggplot2::labs(
+    title = "Distribuciones posteriores – Modelo simple",
+    x = "Valor estimado",
+    y = NULL
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+```
+
+Este modelo estima cómo cinco variables influyen en los juicios morales.
+
+- **Acción**, **intención** y **contacto** tienen efectos negativos pronunciados, con distribuciones claramente alejadas de cero. Esto indica que estos factores están asociados con una menor aprobación moral, de forma consistente y con alta certeza.
+
+- **Edad** muestra un efecto negativo débil pero definido, aunque su magnitud es pequeña en comparación con los efectos situacionales.
+
+- **Educación**, en contraste, tiene una distribución muy centrada en cero y estrecha, lo que sugiere que no tiene un efecto relevante en los juicios morales una vez controlados los otros factores.
+
+En conjunto, el modelo refuerza la idea de que los juicios morales ante dilemas como el del tranvía se ven más afectados por aspectos contextuales de la situación (como la acción, la intención o el contacto físico) que por características personales como la edad o el nivel educativo.
 
 
 ## Resultados
