@@ -596,21 +596,6 @@ El gráfico muestra las distribuciones posteriores de los coeficientes estimados
 En conjunto, el modelo indica que los factores situacionales (como acción, intención, contacto y sus combinaciones) tienen mayor peso en los juicios morales que características individuales como la educación.
 
 
-```{r run-sampling, message=FALSE}
-fit <- mod$sample(
-  data = stan_data,
-  seed = 123,
-  chains = 4,
-  parallel_chains = 4,
-  iter_warmup = 1000,
-  iter_sampling = 1000
-)
-
-# Extraer muestras
-draws <- fit$draws()
-```
-
-
 ## 5)
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 m_simple <- ulam(
@@ -678,7 +663,7 @@ En conjunto, el modelo refuerza la idea de que los juicios morales ante dilemas 
 ## 4) Modelos de género sobre respuesta
 
 0. Preparación de datos
-```{r}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 library(rethinking)
 data(Trolley)
 d <- Trolley
@@ -687,7 +672,7 @@ d$A <- standardize(d$age)  # Estandarizar edad
 ```
 
 1. Modelo sencillo incluyendo sólo género
-```{r}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 m1g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -701,15 +686,16 @@ m1g <- ulam(
 ```
 
 Análisis
-```{r}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 precis(m1g, depth = 2)
 ```
 
-bM > 0.55 → Con este primer modelo, al ser positivo con un intervalo de credibilidad del 95% entre 0.49 y 0.60
-            creemos que los hombres de la muestra tienden a juzgar más permisivo intervenir.
+- `bM = 0.55`: Con este primer modelo de género, al ser positivo con un intervalo de credibilidad del 95% entre 0.49 y 0.60
+creemos que los hombres de la muestra tienden a juzgar más permisivo intervenir.
 
-Paso 2: Añadir control por intención y acción
-```{r}
+
+2: Añadir control por intención y acción
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 m2g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -724,16 +710,16 @@ m2g <- ulam(
 ```
 
 Análisis
-```{r}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 precis(m2g, depth = 2)
 compare(m1g, m2g)
 ```
 
-Al controlar por contexto moral obtenemos un intervalo de confianza muy parecido de 0.50 a 0.61
-El modelo tiene menor WAIC por lo que decimos que el ajuste mejora unu poco
+- Al controlar por contexto moral obtenemos un intervalo de confianza muy parecido de 0.50 a 0.61
+El modelo tiene menor WAIC por lo que decimos que el ajuste mejora un poco
 
-Paso 3: Añadir edad (estandarizada)
-```{r}
+3: Añadir edad (estandarizada)
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 m3g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -747,16 +733,15 @@ m3g <- ulam(
 ```
 
 🔍 Análisis:
-```{r}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 precis(m3g, depth = 2)
 compare(m1g, m2g, m3g)
 ```
 
-Evalúa si la edad tiene un efecto (bAge).
-Compara con modelos anteriores con compare(m2, m3).
+- `bAge = -0.06`: La edad tiene un efecto pequeño negativo, a mayor edad, ligeramente menor aprobación moral. Personas mayores podrían ser más conservadoras en sus juicios.
 
-Paso 4: Añadir interacciones entre male y intent, action
-```{r}
+4: Añadir interacciones entre género, intención y acción
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 m4g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -777,13 +762,34 @@ m4g <- ulam(
 
 
 Análisis completo:
-```{r}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 precis(m4g, depth = 2)
 compare(m1g, m2g, m3g, m4g)
 ```
 
-bMI: Si positivo → hombres son más permisivos cuando la acción es intencional.
-bMA: Si negativo → hombres menos permisivos cuando la acción es directa (acción == 1).
+
+# Resultados del modelo
+
+| Parámetro   | Media | Interpretación                                                      |
+| ----------- | ----- | ------------------------------------------------------------------- |
+| `bM`        | +0.67 | Los hombres tienden a ser más permisivos moralmente.                |
+| `bI`        | –0.62 | Si el daño es **intencional**, se reduce la aprobación moral.       |
+| `bA`        | –0.28 | Las acciones **directas** son menos aceptadas moralmente.           |
+| `bAge`      | –0.06 | La edad tiene un efecto pequeño y negativo.                         |
+| `bMI`       | –0.11 | Hombres castigan más que mujeres cuando el daño es **intencional**. |
+| `bMA`       | –0.16 | Hombres castigan más que mujeres cuando la acción es **directa**.   |
+
+# Interpretación General
+
+Género tiene un efecto significativo: los hombres son más permisivos moralmente en general (bM > 0).
+Sin embargo, esa permisividad disminuye en situaciones donde la acción es intencional o directa (bMI, bMA < 0).
+Este modelo sugiere que el contexto moral modula cómo el género afecta los juicios.
+
+# Conclusión
+
+Aunque los hombres son en promedio más permisivos frente a dilemas morales, su permisividad disminuye más que la de las mujeres cuando el daño es intencional o la acción es directa. Esto sugiere que el efecto del género no es uniforme, sino que depende del tipo de dilema.
+
+
 ## Resultados
 
 
