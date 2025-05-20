@@ -159,6 +159,80 @@ combined_results <- list(
 print(combined_results)
 
 ```
+
+# Análisis por género para el escenario dónde se tiene contacto
+
+```{r}
+# Filtrar los datos donde contact == 1
+d_filtered <- d[d$contact == 1, ]
+
+# Modelo incluyendo male como predictor
+m_custom <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bM * male,
+    c(bM) ~ dnorm(0, 10),
+    cutpoints ~ dnorm(0, 10)  # Puntos de corte como vector
+  ),
+  data = d_filtered,
+  start = list(cutpoints = c(-1.9, -1.2, -0.7, 0.2, 0.9, 1.8)),
+  chains = 2,  # Número de cadenas MCMC
+  cores = 2,   # Paralelización
+  iter = 1000  # Iteraciones por cadena
+)
+
+# Resumen del modelo
+precis(m_custom, depth = 2)
+
+```
+
+Valor medio (bM mean = 0.35): Esto sugiere que ser hombre está asociado con un incremento en phi, el predictor de la calificación ordinal. Dependiendo de la codificación de response, esto podría significar una tendencia a dar calificaciones más altas.
+Calificaciones más altas indica que los hombres ven la acción moralmente más aceptable
+
+Desviación estándar (bM sd = 0.08): Indica la incertidumbre del estimador. Como el valor es relativamente pequeño, sugiere que la estimación de bM es bastante precisa con poca variabilidad.
+
+Signo positivo de bM: Si phi se traduce en una mayor calificación en el dilema moral, esto indicaría que los hombres tienden a evaluar la acción con una calificación más alta en comparación con las mujeres.
+
+# Análisis por edad
+
+```{r}
+library(rethinking)
+library(ggplot2)
+
+d_filtered <- na.omit(d_filtered)
+
+# Crear categorías de edad
+#d_filtered$age_group <- cut(d_filtered$age, breaks = c(18, 35, 55, Inf), 
+#                            labels = c("Joven", "Adulto", "Mayor"))
+
+d_filtered$age_group <- cut(d_filtered$age, breaks = c(18, 35, Inf), 
+                            labels = c("Joven", "Adulto"))
+
+# Codificar age_group como variable numérica
+d_filtered$age_group_num <- as.numeric(d_filtered$age_group)
+
+# Modelo incluyendo el grupo de edad como predictor
+m_age <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bA * age_group_num,
+    bA ~ dnorm(0, 2),
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = d_filtered,
+  start = list(cutpoints = c(-1.9, -1.2, -0.7, 0.2, 0.9, 1.8)),
+  chains = 2,
+  cores = 2,
+  iter = 1000
+)
+```
+
+```{r}
+# Resumen del modelo
+precis(m_age, depth = 2)
+```
+
+
 WAIC
 ```{r}
 # Opción 1: Usar LOO-CV (recomendado)
