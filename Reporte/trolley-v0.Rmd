@@ -675,7 +675,115 @@ Este modelo estima cómo cinco variables influyen en los juicios morales.
 
 En conjunto, el modelo refuerza la idea de que los juicios morales ante dilemas como el del tranvía se ven más afectados por aspectos contextuales de la situación (como la acción, la intención o el contacto físico) que por características personales como la edad o el nivel educativo.
 
+## 4) Modelos de género sobre respuesta
 
+0. Preparación de datos
+```{r}
+library(rethinking)
+data(Trolley)
+d <- Trolley
+d$A <- standardize(d$age)  # Estandarizar edad
+
+```
+
+1. Modelo sencillo incluyendo sólo género
+```{r}
+m1g <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bM * male,
+    bM ~ dnorm(0, 1),
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = d,
+  chains = 2, cores = 2, iter = 1000,
+  log_lik = TRUE)
+```
+
+Análisis
+```{r}
+precis(m1g, depth = 2)
+```
+
+bM > 0.55 → Con este primer modelo, al ser positivo con un intervalo de credibilidad del 95% entre 0.49 y 0.60
+            creemos que los hombres de la muestra tienden a juzgar más permisivo intervenir.
+
+Paso 2: Añadir control por intención y acción
+```{r}
+m2g <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bM * male + bI * intention + bA * action,
+    c(bM, bI, bA) ~ dnorm(0, 1),
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = d,
+  chains = 2, cores = 2, iter = 1000,
+  log_lik = TRUE)
+
+```
+
+Análisis
+```{r}
+precis(m2g, depth = 2)
+compare(m1g, m2g)
+```
+
+Al controlar por contexto moral obtenemos un intervalo de confianza muy parecido de 0.50 a 0.61
+El modelo tiene menor WAIC por lo que decimos que el ajuste mejora unu poco
+
+Paso 3: Añadir edad (estandarizada)
+```{r}
+m3g <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bM * male + bI * intention + bA * action + bAge * A,
+    c(bM, bI, bA, bAge) ~ dnorm(0, 1),
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = d,
+  chains = 2, cores = 2, iter = 1000,
+  log_lik = TRUE)
+```
+
+🔍 Análisis:
+```{r}
+precis(m3g, depth = 2)
+compare(m1g, m2g, m3g)
+```
+
+Evalúa si la edad tiene un efecto (bAge).
+Compara con modelos anteriores con compare(m2, m3).
+
+Paso 4: Añadir interacciones entre male y intent, action
+```{r}
+m4g <- ulam(
+  alist(
+    response ~ dordlogit(phi, cutpoints),
+    phi <- bM * male +
+           bI * intention +
+           bA * action +
+           bAge * A +
+           bMI * male * intention +
+           bMA * male * action,
+    c(bM, bI, bA, bAge, bMI, bMA) ~ dnorm(0, 1),
+    cutpoints ~ dnorm(0, 10)
+  ),
+  data = d,
+  chains = 2, cores = 2, iter = 1000,
+  log_lik = TRUE)
+
+```
+
+
+Análisis completo:
+```{r}
+precis(m4g, depth = 2)
+compare(m1g, m2g, m3g, m4g)
+```
+
+bMI: Si positivo → hombres son más permisivos cuando la acción es intencional.
+bMA: Si negativo → hombres menos permisivos cuando la acción es directa (acción == 1).
 ## Resultados
 
 
