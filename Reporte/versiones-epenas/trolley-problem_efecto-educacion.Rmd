@@ -1,0 +1,410 @@
+---
+title: "Trolley Problem: Proyecto Final"
+author: "Equipo: Valeria Durán Rubio, Rosendo Iván García Alba, Eduardo Antonio Peña Sandoval"
+output: html_document
+---
+
+<style>
+p {
+  text-align: justify;
+}
+</style>
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+# Cargar librerías necesarias
+library(rethinking)   # Accede al conjunto de datos 'Trolley' y funciones estadísticas del libro Statistical Rethinking
+library(ggplot2)      # Permite crear gráficos elegantes y personalizables usando gramática de gráficos
+library(dplyr)        # Facilita la manipulación de datos con funciones encadenables (pipes)
+library(tidyr)        # Permite transformar y reestructurar data frames (pivotar, desanidar, etc.)
+library(tidyverse)
+
+# Cargar datos
+data(Trolley)
+d <- Trolley
+
+```
+
+### Evaluación del Efecto del Nivel Educativo sobre las Decisiones Morales
+
+#### Distribución de Observaciones por Nivel Educativo
+
+Con el fin de evaluar el efecto del nivel educativo sobre las decisiones morales, se analiza la distribución de observaciones a lo largo de los distintos niveles reportados en el cuestionario. Para ello, se definieron niveles ordenados de menor a mayor escolaridad:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Manejo de los datos
+trolley <- d |> 
+  select(-case,-action2, -order)  # Eliminar columnas innecesarias
+
+niveles_ordenados <- c(
+  "Elementary School",
+  "Middle School",
+  "Some High School",
+  "High School Graduate",
+  "Some College",
+  "Bachelor's Degree",
+  "Master's Degree",
+  "Graduate Degree"
+)
+
+# Convertir a factor ordenado
+trolley <- trolley |>
+  mutate(edu_group = factor(edu, levels = niveles_ordenados, ordered = TRUE))
+
+# Crear índice numérico
+trolley <- trolley |>
+  mutate(edu_group_idx = as.integer(edu_group))
+
+# Ver distribución de observaciones
+df_edu_group <- trolley |>
+  count(edu_group) |>
+  arrange(edu_group) |>
+  mutate(n = format(n, big.mark = ",")) |>
+  rename(`Nivel educativo` = edu_group, Frecuencia = n)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(df_edu_group,
+             col.names = c("Nivel educativo", "Número de observaciones"),
+             align= c('l','r'),
+             caption = "Distribución por nivel educativo (ordenado)")
+```
+
+Como se puede observar, la distribución de observaciones es razonablemente balanceada a lo largo de los niveles educativos, aunque existen diferencias en la densidad de casos por nivel. Esta evaluación permite justificar el modelado del nivel educativo como una variable categórica ordenada.
+
+
+#### Planteamiento del Modelo
+
+Para evaluar el efecto del nivel educativo en el juicio moral, se extiende el modelo ordinal bayesiano previamente ajustado. En esta versión, se incorpora el nivel educativo como una **variable categórica ordenada**, lo que permite detectar diferencias sistemáticas entre tramos educativos sin asumir una relación funcional específica.
+
+El modelo propuesto es el siguiente:
+
+\[
+\text{response} \sim \text{ordered logistic}(\phi, \text{cutpoints})
+\]
+\[
+\phi = \beta_A \cdot \text{action} + 
+       \beta_I \cdot \text{intention} + 
+       \beta_C \cdot \text{contact} + 
+       \beta_{AI} \cdot (\text{action} \cdot \text{intention}) + 
+       \beta_{CI} \cdot (\text{contact} \cdot \text{intention}) + 
+       \beta_{E[g]}
+\]
+
+\[
+\text{donde } g = \text{grupo educativo}
+\]
+
+Cada grupo educativo tiene su propio efecto \(\beta_{E[g]}\), estimado de manera **intercambiable** a través de una distribución normal con varianza común:
+
+\[
+\beta_{E[g]} \sim \text{Normal}(0, \sigma_{\text{edu}}), \quad \sigma_{\text{edu}} \sim \text{Exponential}(1)
+\]
+
+Esta estructura permite modelar diferencias entre niveles educativos de manera flexible, regularizando los efectos cuando el número de observaciones por nivel es reducido. Esta aproximación está alineada con los principios del modelado jerárquico bayesiano propuestos en *Statistical Rethinking*.
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# Preparar lista de datos
+d_edu <- list(
+  response = trolley$response,
+  action = trolley$action,
+  contact = trolley$contact,
+  intention = trolley$intention,
+  edu_group = trolley$edu_group_idx
+)
+
+# Modelo con efectos específicos por grupo educativo
+m_edu_group <- ulam(
+  alist(
+    response ~ ordered_logistic(phi, cutpoints),
+    phi <- bA * action +
+           bI * intention +
+           bC * contact +
+           bAI * action * intention +
+           bCI * contact * intention +
+           bE[edu_group],
+    c(bA, bI, bC, bAI, bCI) ~ normal(0, 10),
+    bE[edu_group] ~ normal(0, sigma_edu),
+    sigma_edu ~ exponential(1),
+    cutpoints ~ normal(0, 10)
+  ),
+  data = d_edu,
+  chains = 4,
+  cores = 4,
+  log_lik = TRUE
+)
+
+```
+
+#### Interpretación de los Parámetros \(\beta_{E[g]}\)
+
+Cada grupo de educativo tiene su propio efecto estimado, representado por \(\beta_{E[g]}\), el cual indica cómo se desplaza la propensión a emitir juicios morales más severos en comparación con el promedio global (ajustado por las variables del escenario).
+
+- Si \(\beta_{E[g]} > 0\): El nivel educativo \(g\) tiende a emitir juicios morales más condenatorios que el promedio general.
+- Si \(\beta_{E[g]} < 0\): El nivel educativo \(g\) tiende a emitir juicios más indulgentes.
+- Si \(\beta_{E[g]} \approx 0\): El nivel educativo no se diferencia sustancialmente del resto, una vez controlado por el escenario.
+
+Cabe señalar que los efectos están **regularizados jerárquicamente**, por lo que los grupos con menor información estarán más próximos al promedio.
+
+---
+
+#### Limitaciones
+
+- El nivel educativo es una **variable observacional y fija por individuo**, por lo que no permite inferencia causal.
+- El modelo no controla por otras covariables personales relevantes, como la edad, que podría estar correlacionado con la educación y confundir parcialmente los efectos.
+- Aunque se usa una estructura jerárquica, no se han incluido efectos aleatorios por individuo (`id`), lo que podría limitar la capacidad del modelo para capturar **variabilidad intra-individual** no explicada por el escenario.
+- Se asume que los efectos de grupo son **intercambiables**, lo cual es razonable bajo incertidumbre, pero también limita la posibilidad de capturar **tendencias sistemáticas no especificadas**.
+
+---
+
+#### Alcances del Modelo
+
+Este modelo permite:
+
+- Evaluar si existen **patrones sistemáticos y diferenciados** en los juicios morales según el nivel educativo.
+
+- Extender el análisis más allá del diseño experimental, integrando una dimensión individual estructural.
+
+- Aplicar un enfoque bayesiano jerárquico que **mejora la estabilidad del modelo** frente a diferencias en el número de observaciones por grupo.
+
+- Generar **hipótesis empíricas sobre el papel de la formación educativa** en la construcción de intuiciones morales.
+
+---
+
+#### ¿Es Útil Este Análisis?
+
+Sí. Este enfoque permite integrar el nivel educativo como una característica estructural relevante en el estudio de decisiones morales. Aunque no se pueden establecer relaciones causales, **la comparación estructurada y regularizada entre grupos educativos** enriquece la comprensión del fenómeno moral observado. Además, sienta las bases para extensiones futuras del modelo que incorporen otras covariables individuales o efectos aleatorios.
+
+### Distribución Estimada de Respuestas por Nivel Educativo
+
+La siguiente figura muestra cómo varía la distribución estimada de respuestas (categorías 1 a 7) en función del nivel educativo, bajo seis combinaciones distintas de las variables `action`, `contact` e `intention`. Cada panel representa una configuración específica del dilema moral, mientras que el eje horizontal representa los niveles educativos ordenados (de menor a mayor escolaridad), y el eje vertical indica la probabilidad estimada para cada categoría.
+
+Las curvas trazadas corresponden a simulaciones extraídas de la distribución posterior del modelo. Esto permite observar no solo la tendencia central de las respuestas, sino también la **incertidumbre** y **variabilidad** estimada para cada nivel educativo en distintos escenarios. Las categorías están etiquetadas al borde derecho de cada gráfico, destacando especialmente la categoría 7, correspondiente al juicio moral más severo.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, out.width="100%", fig.align = 'center'}
+# Extraer muestras del modelo
+post_edu <- extract.samples(m_edu_group)
+post_edu <- as.data.frame(post_edu)
+
+# Grupos educativos: asumimos que hay 8 niveles (ajustar si hay más o menos)
+edu_groups <- 1:8  # índices de edu_group ordenados
+
+# Combinaciones a graficar
+configs <- list(
+  list(action = 1, contact = 0, intention = 0),
+  list(action = 0, contact = 0, intention = 1),
+  list(action = 0, contact = 0, intention = 0),
+  list(action = 1, contact = 0, intention = 1),
+  list(action = 0, contact = 1, intention = 0),
+  list(action = 0, contact = 1, intention = 1)
+)
+
+titles <- c(
+  "action=1, contact=0, intention=0",
+  "action=0, contact=0, intention=1",
+  "action=0, contact=0, intention=0",
+  "action=1, contact=0, intention=1",
+  "action=0, contact=1, intention=0",
+  "action=0, contact=1, intention=1"
+)
+
+# Layout 2 filas × 3 columnas
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+# Graficar para cada combinación
+for (j in 1:length(configs)) {
+  cfg <- configs[[j]]
+  plot(1, 1, type = "n",
+       xlab = "Nivel educativo (G1-G8)", ylab = "probabilidad",
+       xlim = range(edu_groups), ylim = c(0, 1),
+       main = titles[j], xaxt = "n")
+
+  axis(1, at = edu_groups, labels = paste("G", edu_groups, sep=""))
+
+  pk_mean <- matrix(0, nrow = length(edu_groups), ncol = 6)
+
+  for (s in 1:100) {
+    ak <- as.numeric(post_edu[s, paste0("cutpoints.", 1:6)])
+    for (i in seq_along(edu_groups)) {
+      edu_idx <- edu_groups[i]
+      phi <- post_edu$bA[s] * cfg$action +
+             post_edu$bI[s] * cfg$intention +
+             post_edu$bC[s] * cfg$contact +
+             post_edu$bAI[s] * cfg$action * cfg$intention +
+             post_edu$bCI[s] * cfg$contact * cfg$intention +
+             as.numeric(post_edu[s, paste0("bE.", edu_idx)])
+
+      pk <- pordlogit(1:6, a = ak, phi = phi)
+      pk_mean[i, ] <- pk_mean[i, ] + pk
+
+      for (k in 1:6) {
+        lines(edu_groups, pk_mean[, k] / s, col = col.alpha("#0058a8", 0.1), lwd = 2)
+      }
+    }
+  }
+
+  # Promedio final
+  pk_mean <- pk_mean / 100
+
+  for (k in 1:6) {
+    y_pos <- max(pk_mean[, k][length(edu_groups)])
+    text(max(edu_groups), y_pos - 0.03, labels = as.character(k), col = "#0058a8", cex = 0.85)
+  }
+
+  text(max(edu_groups), 0.9, labels = "7", col = "#0058a8", cex = 0.85, pos = 3)
+}
+```
+
+
+Cada panel representa una configuración experimental distinta, permitiendo observar cómo el juicio moral cambia entre niveles educativos al mantener constante el escenario del dilema.
+
+#### Principales observaciones:
+
+- **Tendencias consistentes entre niveles intermedios (G4–G6):** En múltiples escenarios, los grupos educativos intermedios (por ejemplo, "High School Graduate" a "Bachelor's Degree") muestran una mayor concentración en las categorías altas (respuestas 6 y 7), lo que sugiere una mayor disposición a emitir juicios morales más severos.
+
+- **Grupos extremos con mayor variabilidad:** Los niveles educativos más bajos (`G1`, `G2`) y más altos (`G8`) presentan mayor dispersión en las respuestas. Las líneas asociadas a estos grupos divergen más entre sí y, en ocasiones, se concentran en valores extremos (cercanos a 0 o 1), indicando mayor heterogeneidad en las intuiciones morales de esos segmentos.
+
+- **Intención como factor dominante:** Al igual que en análisis anteriores, los escenarios con `intention = 1` muestran un desplazamiento sistemático de la masa de probabilidad hacia las respuestas más severas (categorías 6 y 7), independientemente del nivel educativo. Este patrón reafirma que la intención del agente es el elemento más influyente en el juicio moral.
+
+- **Interacción entre contacto y educación:** En condiciones con contacto físico (`contact = 1`), los grupos con mayor escolaridad tienden a mostrar respuestas más consistentes y condenatorias. Esto sugiere que una mayor formación educativa puede amplificar la sensibilidad moral ante el uso de medios físicos para causar daño.
+
+#### Interpretación general
+
+Los resultados indican que las respuestas a dilemas morales como el *Trolley Problem* **varían de forma sistemática según el nivel educativo**. Aunque no se identifica un patrón estrictamente monótono (creciente o decreciente), sí se observa una mayor consistencia y severidad en los niveles intermedios y altos de educación formal.
+
+Estas estimaciones, obtenidas a través de un modelo bayesiano ordinal con efectos jerárquicos por grupo educativo, permiten capturar diferencias estructuradas entre segmentos poblacionales. Además, la visualización generada comunica con claridad la **incertidumbre posterior** y las tendencias dominantes en cada escenario experimental. Esto refuerza la importancia de considerar el **nivel educativo como un moderador relevante del juicio moral**, complementando la influencia de los factores del escenario (acción, intención y contacto).
+
+
+### Probabilidad Estimada de Respuesta Máxima (Categoría 7)
+
+Una forma directa de interpretar el efecto del nivel educativo sobre los juicios morales es analizar la **probabilidad de que un individuo emita la respuesta más severa**, es decir, una puntuación de **7 en la escala ordinal**. Esta categoría representa la condena moral más fuerte dentro del dilema evaluado, por lo que su análisis ofrece una lectura clara de la severidad percibida en cada escenario.
+
+Para estimar esta probabilidad, se utilizan las muestras posteriores del modelo bayesiano ajustado. En cada iteración del modelo, se calcula la variable latente \(\phi\) como una combinación lineal de los predictores (`action`, `contact`, `intention`) y del efecto correspondiente al nivel educativo. Luego, se aplica la función de verosimilitud ordinal para obtener la probabilidad de cada categoría. En particular, la **probabilidad de la respuesta 7** se obtiene como:
+
+\[
+P(y = 7) = 1 - P(y \leq 6)
+\]
+
+donde \(P(y \leq 6)\) es la probabilidad acumulada hasta el sexto punto de corte en la escala ordinal. Este cálculo se repite para cada nivel educativo, y se resume mediante la media y un intervalo de credibilidad del 89%.
+
+La figura siguiente presenta un resumen visual de estos resultados para seis combinaciones de las variables experimentales. Cada panel muestra cómo varía la **probabilidad estimada de emitir un juicio moral severo (respuesta = 7)** en función del nivel educativo, permitiendo comparar directamente las diferencias entre niveles de escolaridad bajo distintas condiciones del dilema moral.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=4, out.width="100%", fig.align = 'center'}
+# Escenarios definidos
+escenarios <- list(
+  list(action = 1, contact = 0, intention = 0),
+  list(action = 0, contact = 0, intention = 1),
+  list(action = 0, contact = 0, intention = 0),
+  list(action = 1, contact = 0, intention = 1),
+  list(action = 0, contact = 1, intention = 0),
+  list(action = 0, contact = 1, intention = 1)
+)
+
+titulos <- c(
+  "a=1, c=0, i=0",
+  "a=0, c=0, i=1",
+  "a=0, c=0, i=0",
+  "a=1, c=0, i=1",
+  "a=0, c=1, i=0",
+  "a=0, c=1, i=1"
+)
+
+edu_groups <- 1:8
+
+# Crear lista de resultados
+resultados <- map2(escenarios, titulos, function(cfg, titulo) {
+  p7 <- matrix(NA, nrow = 100, ncol = length(edu_groups))
+
+  for (s in 1:100) {
+    ak <- as.numeric(post_edu[s, paste0("cutpoints.", 1:6)])
+    for (i in seq_along(edu_groups)) {
+      phi <- post_edu$bA[s] * cfg$action +
+             post_edu$bI[s] * cfg$intention +
+             post_edu$bC[s] * cfg$contact +
+             post_edu$bAI[s] * cfg$action * cfg$intention +
+             post_edu$bCI[s] * cfg$contact * cfg$intention +
+             as.numeric(post_edu[s, paste0("bE.", edu_groups[i])])
+
+      p7[s, i] <- 1 - pordlogit(6, a = ak, phi = phi)
+    }
+  }
+
+  p7_mean <- colMeans(p7)
+  p7_lower <- apply(p7, 2, quantile, probs = 0.055)
+  p7_upper <- apply(p7, 2, quantile, probs = 0.945)
+
+  tibble(
+    GrupoEdu = factor(paste0("G", edu_groups), levels = paste0("G", edu_groups)),
+    Prob_Media = p7_mean,
+    Inferior = p7_lower,
+    Superior = p7_upper,
+    Escenario = titulo
+  )
+})
+
+# Unir resultados
+df_p7_all <- bind_rows(resultados)
+
+# Graficar
+ggplot(df_p7_all, aes(x = GrupoEdu, y = Prob_Media)) +
+  geom_point(size = 2, color = "#0058a8") +
+  geom_errorbar(aes(ymin = Inferior, ymax = Superior), width = 0.2, color = "#0058a8") +
+  facet_wrap(~ Escenario, nrow = 2) +
+  labs(
+    title = "Probabilidad estimada de respuesta = 7 por nivel educativo",
+    subtitle = "Seis combinaciones de action, contact e intention",
+    x = "Nivel educativo (G1-G8)",
+    y = "Probabilidad de respuesta = 7"
+  ) +
+  theme_minimal()
+```
+
+#### Análisis de Resultados: Probabilidad de Respuesta Máxima (Categoría 7)
+
+La figura muestra cómo varía la **probabilidad posterior estimada de emitir un juicio moral severo** (respuesta = 7) en función del nivel educativo, bajo seis combinaciones específicas de las variables `action`, `contact` e `intention`. Cada punto representa la media posterior de dicha probabilidad, acompañado por su intervalo de credibilidad al 89%.
+
+##### Principales hallazgos:
+
+- **Los niveles educativos más bajos (G1 y G2)** presentan, en varios escenarios, **probabilidades más altas de emitir juicios morales severos**. Esta tendencia es particularmente clara en los casos donde la intención está presente (`i = 1`), lo que sugiere que los participantes con menor escolaridad tienden a condenar con más fuerza las acciones percibidas como intencionales, incluso sin contacto o acción directa.
+
+- A medida que **aumenta el nivel educativo**, se observa una **disminución sistemática en la probabilidad de respuesta 7**, sobre todo en los escenarios más severos (`i = 1`). Esto podría interpretarse como una mayor propensión a matizar el juicio moral conforme se avanza en la trayectoria educativa.
+
+- En los escenarios donde la **intención está ausente** (`i = 0`), las probabilidades de emitir una respuesta condenatoria son bajas en todos los niveles educativos. Este patrón refuerza que la intención es el **factor más relevante en la evaluación moral**, superando en peso a la acción o al contacto.
+
+- Los grupos intermedios de escolaridad (G4 a G6), que corresponden a niveles como "High School Graduate" y "Bachelor’s Degree", muestran estimaciones más consistentes y moderadas, con **intervalos de credibilidad más estrechos**, lo cual indica **mayor homogeneidad en las respuestas**.
+
+- En contraste, **los extremos del espectro educativo** (G1 y G8) exhiben mayor incertidumbre (intervalos más amplios), lo cual puede atribuirse a **una mayor heterogeneidad de opiniones o menor cantidad de observaciones** en esos niveles.
+
+##### Conclusión general
+
+Este análisis evidencia que los juicios morales no solo están determinados por el contexto del dilema, sino que también dependen de **características individuales como el nivel educativo**. En particular, la tendencia hacia respuestas más indulgentes en los niveles educativos más altos podría reflejar una **mayor complejidad en la evaluación moral** aprendida a lo largo del proceso educativo.
+
+La estimación de la **probabilidad de respuesta 7** permite interpretar de manera directa y clara la severidad moral percibida por grupo. Combinado con la modelación jerárquica bayesiana, este enfoque ofrece una representación robusta y matizada de cómo la formación académica influye en la manera en que se juzgan dilemas morales.
+
+### Reflexiones sobre lo que puede (y no puede) estimarse con encuestas
+
+Este ejercicio permite entender que, mediante encuestas, podemos estimar **asociaciones estructuradas** entre variables —como edad o nivel educativo— y respuestas a dilemas morales. Gracias al enfoque bayesiano, es posible modelar **efectos condicionales**, explorar **variabilidad entre grupos** y representar explícitamente la **incertidumbre posterior**.
+
+Sin embargo, una encuesta **no permite inferencia causal directa**, especialmente si no hay aleatorización ni control sobre la asignación de condiciones. Factores como la edad o el nivel educativo no se manipulan, por lo que **las diferencias observadas pueden deberse a variables no medidas**, como ideología, religión o experiencias previas.
+
+Para mejorar la validez de este tipo de análisis es clave:
+- Controlar o ajustar por posibles **variables de confusión**.
+- Considerar el riesgo de **sesgo de selección**.
+- No sobreinterpretar correlaciones como causales.
+- Utilizar estructuras jerárquicas para capturar **variabilidad estructural**.
+
+---
+
+### Limitaciones del uso de encuestas en dilemas hipotéticos
+
+Trabajar con datos de encuestas sin conocer el origen de los participantes impone límites importantes:
+
+- **Posible sesgo de selección**: No sabemos si quienes respondieron son sistemáticamente distintos del resto de la población.
+- **Falta de contexto sociocultural**: Variables como religión o nacionalidad, que podrían influir fuertemente en el juicio moral, no están disponibles.
+- **Naturaleza hipotética del dilema**: Las respuestas dadas pueden diferir de lo que las personas harían en un contexto real, afectadas por normas sociales o deseabilidad de respuesta.
+- **Imposibilidad de generalización**: Sin información geográfica o cultural, no podemos saber si los patrones son universales o localizados.
+
+En síntesis, los resultados permiten generar hipótesis robustas sobre intuiciones morales, pero no deben interpretarse como verdades causales. El uso de encuestas ofrece valor exploratorio, pero requiere cautela metodológica al interpretar sus resultados.
+

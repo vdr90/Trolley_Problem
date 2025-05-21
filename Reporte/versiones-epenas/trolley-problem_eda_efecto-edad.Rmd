@@ -1,0 +1,776 @@
+---
+title: "Trolley Problem: Proyecto Final"
+author: "Equipo: Valeria Duran Rubio, Rosendo Ivan Garcia Alba, Eduardo Antonio Peña Sandoval"
+output: html_document
+---
+
+<style>
+p {
+  text-align: justify;
+}
+</style>
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+# Cargar librerías necesarias
+library(rethinking)   # Accede al conjunto de datos 'Trolley' y funciones estadísticas del libro Statistical Rethinking
+library(ggplot2)      # Permite crear gráficos elegantes y personalizables usando gramática de gráficos
+library(dplyr)        # Facilita la manipulación de datos con funciones encadenables (pipes)
+library(tidyr)        # Permite transformar y reestructurar data frames (pivotar, desanidar, etc.)
+library(tidyverse)
+
+# Cargar datos
+data(Trolley)
+d <- Trolley
+
+# Modelo con mejor WAIC con base en las notas de Statistical Rethinking
+m11.3_ulam <- ulam(
+  alist(
+    response ~ ordered_logistic(phi, cutpoints),
+    phi <- bA * action + 
+           bI * intention + 
+           bC * contact +
+           bAI * action * intention +
+           bCI * contact * intention,
+    c(bA, bI, bC, bAI, bCI) ~ normal(0, 10),
+    cutpoints ~ normal(0, 10)
+  ),
+  data = d,
+  chains = 4,
+  cores = 4,
+  log_lik = TRUE
+)
+```
+
+### Contexto del Estudio
+
+Este análisis explora cómo ciertos factores influyen en la forma en que las personas juzgan la moralidad de escenarios hipotéticos, como el *Trolley Problem*. Las respuestas se recolectaron en una escala ordinal del 1 al 7, donde valores más altos indican juicios morales más extremos o condenatorios.
+
+Se modeló la probabilidad de emitir cada una de estas respuestas en función de tres variables dicotómicas:
+
+- **`intention`**: si el daño fue intencional o no.
+- **`action`**: si se realizó una acción directa o no.
+- **`contact`**: si hubo contacto físico o no.
+
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Manejo de los datos
+trolley <- d |> 
+  select(-case,-action2, -order)  # Eliminar columnas innecesarias
+
+# Información general
+n_observaciones <- nrow(trolley)
+n_individuos <- trolley |> distinct(id) |> nrow()
+
+# Distribución por sexo
+sexo <- trolley |> 
+  count(male) |> 
+  mutate(sexo = ifelse(male == 1, "Hombre", "Mujer"))
+
+# Estadísticas de edad
+resumen_edad <- summary(trolley$age)
+
+```
+
+### Exploración Descriptiva del Conjunto de Datos
+
+El análisis se llevó a cabo sobre un total de `r n_observaciones` observaciones, provenientes de `r n_individuos` personas distintas. Esto confirma que cada individuo respondió, en promedio, 30 escenarios distintos, lo que concuerda con el diseño experimental previamente establecido.
+
+#### Características Demográficas
+
+Con respecto a la variable **sexo**, la muestra se encuentra compuesta por `r format(sexo$n[sexo$sexo == "Hombre"], big.mark = ",")` respuestas proporcionadas por hombres y `r format(sexo$n[sexo$sexo == "Mujer"], big.mark = ",")` por mujeres. Esta distribución representa aproximadamente un `r round(100 * sexo$n[sexo$sexo == "Hombre"] / sum(sexo$n))` % de participación masculina y un `r round(100 * sexo$n[sexo$sexo == "Mujer"] / sum(sexo$n))` % femenina, permitiendo un análisis balanceado entre perspectivas de género.
+
+En cuanto a la **edad** de los participantes, el rango observado va de `r resumen_edad["Min."]` a `r resumen_edad["Max."]` años. La edad promedio es de aproximadamente `r round(resumen_edad["Mean"], 1)` años, mientras que la mediana se ubica en `r resumen_edad["Median"]` años, lo cual sugiere una distribución relativamente simétrica, aunque con una ligera dispersión hacia edades mayores.
+
+A continuación se presenta un histograma que resume la distribución etaria a nivel de persona (y no de observación), agrupando en intervalos de cinco años para facilitar la interpretación:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.align = 'center'}
+# Agrupar por id y quedarnos con una edad por persona
+edades_por_id <- trolley |> 
+  distinct(id, age)
+
+# Histograma de edades
+ggplot(edades_por_id, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "#4682B4", color = "white", boundary = 0) +
+  labs(
+    title = "Distribución de edades de los participantes (grupos de 5 años)",
+    x = "Edad",
+    y = "Número de personas"
+  ) +
+  theme_minimal()
+
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Definir orden lógico de niveles educativos
+niveles_ordenados <- c(
+  "Elementary School",
+  "Middle School",
+  "Some High School",
+  "High School Graduate",
+  "Some College",
+  "Bachelor's Degree",
+  "Master's Degree",
+  "Graduate Degree"
+)
+
+# Reordenar factor
+trolley <- trolley |> 
+  mutate(edu = factor(edu, levels = niveles_ordenados))
+
+# Reordenar factor y contar con formato
+nivel_educativo_ordenado <- trolley |> 
+  mutate(edu = factor(edu, levels = niveles_ordenados)) |>
+  count(edu) |> 
+  arrange(edu) |> 
+  mutate(n = format(n, big.mark = ","))
+
+```
+
+#### Nivel Educativo de los Participantes
+
+La distribución de respuestas según el nivel educativo reportado por los encuestados se muestra a continuación. Esta variable es especialmente útil para contextualizar los juicios morales en función del capital educativo, el cual puede influir en normas, razonamientos éticos y sensibilidad hacia los dilemas presentados.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Mostrar tabla formateada
+knitr::kable(nivel_educativo_ordenado, 
+             col.names = c("Nivel educativo", "Número de respuestas"),
+             caption = "Distribución de respuestas por nivel educativo")
+
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Combinaciones únicas de action-contact-intention
+combinaciones <- trolley |> 
+  count(action, contact, intention, sort = TRUE) |>
+  mutate(n = format(n, big.mark = ","))
+
+n_combinaciones <- nrow(combinaciones)
+```
+
+
+#### Combinaciones de Escenarios y Frecuencia de Respuestas
+
+Además de las variables individuales de cada participante, el conjunto de datos incluye combinaciones experimentales que varían tres factores claves en los dilemas morales: `action`, `contact` e `intention`.
+
+En total, se identificaron `r n_combinaciones` combinaciones distintas de estos factores en el diseño del estudio. A continuación se muestra la distribución de observaciones por cada combinación:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(combinaciones, col.names = c("Action", "Contact", "Intention", "Frecuencia"),
+             align = c("l", "l", "l", "l"),
+             caption = "Número de observaciones por combinación de variables del escenario")
+
+```
+
+Esta distribución revela que algunos escenarios fueron más frecuentes que otros. Por ejemplo, la combinación `action = 1`, `contact = 0`, `intention = 0` es la más común, mientras que combinaciones con contacto tienden a ser menos frecuentes.
+
+#### Número de Respuestas por Participante
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Respuestas por individuo (id)
+respuestas_por_id <- trolley |> 
+  count(id)
+
+resumen_id <- summary(respuestas_por_id$n)
+```
+
+Dado que cada participante fue expuesto a múltiples escenarios, es importante entender cuántas respuestas se registraron por individuo. Todos los participantes respondieron exactamente `r resumen_id[["Min."]]` dilemas, lo que sugiere un diseño experimental equilibrado. Esta estructura valida el uso del identificador (`id`) como agrupador.
+
+
+### Detalles Metodológicos del Modelo Bayesiano Ordinal
+
+#### Fundamento del Enfoque
+
+El modelo fue ajustado dentro del **marco de la estadística bayesiana**, utilizando el motor de inferencia `Stan` a través de la interfaz `ulam()` del paquete `rethinking` en R. Este enfoque permite modelar la incertidumbre de manera explícita, obteniendo distribuciones posteriores de los parámetros en lugar de estimaciones puntuales.
+
+Se utilizó un **modelo ordinal** apropiado para variables de respuesta en escala, como en este caso, donde las personas califican situaciones hipotéticas en una escala del 1 al 7 en función de su juicio moral. Este tipo de modelo asume que existe una **variable latente continua de moralidad** (no observada directamente) y que las respuestas observadas reflejan cortes sobre dicha variable.
+
+---
+
+#### Estructura del Modelo
+
+El modelo especificado es una **regresión ordinal con función de enlace logística**, donde la probabilidad de que una respuesta caiga en cada una de las categorías depende de un valor latente $\phi$ (phi), definido como una combinación lineal de predictores:
+
+\[
+\text{Pr}(Y \leq k) = \text{logit}^{-1}(a_k - \phi)
+\]
+
+donde:
+
+- \( Y \) es la respuesta ordinal observada (de 1 a 7),
+- \( a_k \) son los *cutpoints* o umbrales que dividen la escala latente,
+- \( \phi \) es el valor continuo que representa la posición moral del individuo en esa situación.
+
+La expresión para \( \phi \) incorpora:
+
+- Efectos principales: `action`, `intention`, `contact`.
+- Interacciones: `action × intention` y `contact × intention`.
+
+\[
+\phi = \beta_A \cdot \text{action} + \beta_I \cdot \text{intention} + \beta_C \cdot \text{contact} + \beta_{AI} \cdot (\text{action} \cdot \text{intention}) + \beta_{CI} \cdot (\text{contact} \cdot \text{intention})
+\]
+
+---
+
+#### Ajuste del Modelo con `ulam()`
+
+Se empleó la función `ulam()` para declarar el modelo de manera explícita. Algunas características clave del ajuste:
+
+- Se utilizaron **prioris débilmente informativas** para los coeficientes, promoviendo regularización sin imponer supuestos fuertes.
+- Se utilizaron muestras MCMC para obtener distribuciones posteriores de cada parámetro.
+- Se extrajeron predicciones generadas a partir de estas muestras para visualizar la incertidumbre en las probabilidades estimadas.
+- Se graficaron **curvas por categoría** (1 a 7) para cada combinación de predictores, mostrando tanto la tendencia media como la variabilidad posterior.
+
+---
+
+#### Justificación del Modelo Elegido
+
+Este modelo ordinal fue elegido por las siguientes razones:
+
+1. **Adecuación a la naturaleza de los datos**: Las respuestas están en una escala ordinal, por lo que modelos como regresión lineal o binomial no son apropiados.
+2. **Captura de interacciones morales**: La incorporación de interacciones entre `intention`, `action` y `contact` permite reflejar cómo el juicio moral se modula de manera conjunta y no simplemente aditiva.
+3. **Inferencia completa e intuitiva**: El enfoque bayesiano permite no solo estimar efectos, sino también cuantificar la incertidumbre, lo que da lugar a interpretaciones más robustas.
+4. **Visualización rica**: Al graficar probabilidades por categoría y combinación de variables, el modelo facilita una comprensión accesible del impacto de los predictores sobre las decisiones morales.
+
+---
+
+#### Limitaciones y Precauciones
+
+Si bien el modelo ofrece una representación detallada de los juicios morales, es importante señalar:
+
+- Los datos provienen de una **encuesta observacional**, lo que implica que los efectos estimados deben interpretarse como asociaciones estructuradas más que como efectos causales confirmados.
+- Es probable que exista **sesgo de selección** (quién responde la encuesta), lo que debe ser considerado al generalizar los resultados.
+
+---
+
+En resumen, el modelo ordinal bayesiano ajustado con `ulam()` permitió representar adecuadamente la estructura de los datos, modelar interacciones complejas entre variables relevantes, y producir inferencias visuales e interpretables que enriquecen la comprensión del juicio moral en dilemas éticos.
+
+### Análisis de Resultados del Modelo Ordinal
+
+A continuación se presenta una matriz de gráficos de 3 filas por 3 columnas, donde cada fila muestra cómo varía la distribución de respuestas en la escala moral (del 1 al 7) cuando uno de los factores (`intention`, `action`, `contact`) cambia de 0 a 1. En cada gráfico, los otros dos factores se mantienen constantes. Esto permite visualizar el **efecto marginal** de cada predictor bajo diferentes condiciones contextuales.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=8, out.width="100%", fig.align = 'center'}
+# Extraer muestras del modelo
+post <- extract.samples(m11.3_ulam)
+post <- as.data.frame(post)
+
+# Configurar layout 3x3
+par(mfrow = c(3, 3), mar = c(4, 4, 3, 1))
+
+# Función auxiliar para graficar cada panel
+graficar_panel <- function(xvar, xvals, fixed_vals, title) {
+  plot(1, 1, type = "n",
+       xlab = xvar, ylab = "probability",
+       xlim = range(xvals), ylim = c(0, 1),
+       main = title, xaxp = c(0, 1, 1), yaxp = c(0, 1, 2))
+
+  pk_mean <- matrix(0, nrow = length(xvals), ncol = 6)
+
+  for (s in 1:100) {
+    ak <- as.numeric(post[s, paste0("cutpoints.", 1:6)])
+
+    phi <- switch(
+      xvar,
+      "intention" = post$bA[s] * fixed_vals$action +
+                    post$bI[s] * xvals +
+                    post$bC[s] * fixed_vals$contact +
+                    post$bAI[s] * fixed_vals$action * xvals +
+                    post$bCI[s] * fixed_vals$contact * xvals,
+      "action" = post$bA[s] * xvals +
+                 post$bI[s] * fixed_vals$intention +
+                 post$bC[s] * fixed_vals$contact +
+                 post$bAI[s] * xvals * fixed_vals$intention +
+                 post$bCI[s] * fixed_vals$contact * fixed_vals$intention,
+      "contact" = post$bA[s] * fixed_vals$action +
+                  post$bI[s] * fixed_vals$intention +
+                  post$bC[s] * xvals +
+                  post$bAI[s] * fixed_vals$action * fixed_vals$intention +
+                  post$bCI[s] * xvals * fixed_vals$intention
+    )
+
+    pk <- pordlogit(1:6, a = ak, phi = phi)
+    pk_mean <- pk_mean + pk
+
+    for (i in 1:6) {
+      lines(xvals, pk[, i], col = col.alpha("#0058a8", 0.1), lwd = 2)
+    }
+  }
+
+  # Promedio
+  pk_mean <- pk_mean / 100
+
+  for (k in 1:6) {
+    y_pos <- max(pk_mean[, k])
+    text(max(xvals), y_pos - 0.03, labels = as.character(k), col = "#0058a8", cex = 0.85)
+  }
+
+  text(max(xvals), 0.95, labels = "7", col = "#0058a8", cex = 0.85, pos = 3)
+}
+
+# Fila 1: Intention en eje X
+graficar_panel("intention", 0:1, list(action = 0, contact = 0), "action=0, contact=0")
+graficar_panel("intention", 0:1, list(action = 1, contact = 0), "action=1, contact=0")
+graficar_panel("intention", 0:1, list(action = 0, contact = 1), "action=0, contact=1")
+
+# Fila 2: Action en eje X
+graficar_panel("action", 0:1, list(intention = 0, contact = 0), "intention=0, contact=0")
+graficar_panel("action", 0:1, list(intention = 1, contact = 0), "intention=1, contact=0")
+graficar_panel("action", 0:1, list(intention = 0, contact = 1), "intention=0, contact=1")
+
+# Fila 3: Contact en eje X
+graficar_panel("contact", 0:1, list(action = 0, intention = 0), "action=0, intention=0")
+graficar_panel("contact", 0:1, list(action = 1, intention = 0), "action=1, intention=0")
+graficar_panel("contact", 0:1, list(action = 0, intention = 1), "action=0, intention=1")
+
+```
+
+
+##### Fila 1 – Eje X: `intention`
+
+Esta fila muestra cómo cambia la distribución de respuestas cuando la intención pasa de 0 a 1, en diferentes combinaciones de `action` y `contact`.
+
+**Conclusiones:**
+
+- La pendiente de las curvas es más pronunciada cuando **hay contacto** (`contact = 1`), lo que sugiere que la intención tiene un **efecto más fuerte** cuando también hay contacto físico.
+- Cuando no hay acción ni contacto (`action = 0`, `contact = 0`), la intención tiene **poco o ningún efecto** sobre la evaluación moral.
+
+*Interpretación*: Las personas parecen más sensibles a la intención cuando también se realiza una acción directa y hay contacto físico. El juicio moral se intensifica en estos casos.
+
+---
+
+##### Fila 2 – Eje X: `action`
+
+Aquí se evalúa cómo cambia la severidad moral al pasar de omisión a acción.
+
+**Conclusiones:**
+
+- El impacto de actuar es **más severo cuando hay intención detrás**.
+- En ausencia de intención, actuar o no tiene poco efecto sobre la percepción moral.
+
+*Interpretación*: Realizar una acción per se no genera un juicio moral más severo. Es el **motivo por el que se actúa** (la intención) lo que hace la diferencia moral.
+
+---
+
+##### Fila 3 – Eje X: `contact`
+
+Esta fila muestra cómo cambia la respuesta moral cuando hay contacto físico, bajo diferentes combinaciones de `action` e `intention`.
+
+**Conclusiones:**
+
+- El contacto físico **eleva la severidad del juicio moral** cuando también hay intención (`intention = 1`).
+- Cuando no hay intención, el efecto del contacto es **marginal o nulo**.
+
+*Interpretación*: El contacto físico no basta por sí solo para cambiar el juicio moral. Solo cuando hay una intención detrás, el contacto se vuelve un agravante en la percepción moral.
+
+---
+
+#### Síntesis General
+
+- Los factores `intention`, `action` y `contact` **no operan de forma aislada** sino que sus efectos se potencian entre sí.
+- Las respuestas más condenatorias (valor 7) aparecen especialmente en combinaciones donde **la intención está presente**, y se agravan cuando hay acción o contacto involucrado.
+- Este patrón es coherente con las teorías del razonamiento moral que sostienen que el **motivo y el involucramiento físico** son componentes centrales del juicio ético.
+
+---
+
+#### Relevancia para la Inferencia Causal
+
+Este análisis ejemplifica cómo un modelo bayesiano ordinal puede emplearse para hacer inferencias estructuradas, incluso en contextos donde no hay manipulación experimental directa (por ser datos observacionales).
+
+El modelo permite:
+- Explorar efectos marginales y condicionales.
+- Visualizar la estructura ordinal completa de las respuestas.
+- Inferir cómo ciertas combinaciones de condiciones intensifican el juicio moral.
+
+Recalcamos que aunque no se pueda afirmar causalidad concluyente por tratarse de una encuesta, este enfoque revela **patrones robustos** que son consistentes con teorías de razonamiento moral.
+
+---
+
+### Evaluación del Efecto de la Edad sobre las Decisiones Morales
+
+#### Distribución de Observaciones por Grupos de Edad
+
+Con el fin de evaluar el efecto de la edad sobre las decisiones morales, primero exploramos cómo se distribuyen las observaciones en distintos tramos de edad. Se consideraron dos esquemas de agrupación: intervalos de **5 años** y de **10 años**, iniciando en los 10 años de edad y extendiéndose hasta los 80 años.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Crear agrupaciones por edad (5 años y 10 años)
+trolley <- trolley |> 
+  mutate(
+    age_group_5 = cut(age, breaks = seq(10, 80, by = 5), right = FALSE),
+    age_group_10 = cut(age, breaks = seq(10, 80, by = 10), right = FALSE)
+  )
+
+# Contar número de observaciones por grupo
+conteo_edad <- full_join(
+  trolley |> count(age_group_5) |> rename(`Grupo (5 años)` = age_group_5, `n (5)` = n),
+  trolley |> count(age_group_10) |> rename(`Grupo (10 años)` = age_group_10, `n (10)` = n),
+  by = character()
+)
+
+# Crear dataframe para cada agrupación
+df_age_group_5 <- trolley |> 
+  count(age_group_5) |> 
+  arrange(age_group_5) |> 
+  mutate(n = format(n, big.mark = ",")) |>
+  rename(`Grupo de edad (5 años)` = age_group_5, Frecuencia = n)
+
+df_age_group_10 <- trolley |> 
+  count(age_group_10) |> 
+  arrange(age_group_10) |> 
+  mutate(n = format(n, big.mark = ",")) |>
+  rename(`Grupo de edad (10 años)` = age_group_10, Frecuencia = n)
+```
+
+La siguiente tabla muestra la **distribución de observaciones por grupo de edad** para cada uno de los esquemas:
+
+**Agrupación en tramos de 5 años**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(df_age_group_5, 
+             col.names = c("Grupo de edad (5 años)", "Número de observaciones"),
+             caption = "Distribución por tramos de 5 años")
+```
+
+**Agrupación en tramos de 10 años**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(df_age_group_10, 
+             col.names = c("Grupo de edad (10 años)", "Número de observaciones"),
+             caption = "Distribución por tramos de 10 años")
+```
+
+Como se puede observar, algunos tramos presentan una menor cantidad de observaciones, especialmente en los extremos del rango etario. Esta evaluación es útil para identificar si es viable modelar la edad como una variable categórica ordenada, o si será necesario reagrupar ciertos intervalos para evitar problemas de estimación por escasez de datos.
+
+En los siguientes pasos, seleccionaremos el esquema de agrupación de 10 años, que resulta más equilibrado para construir una variable auxiliar de grupos de edad, la cual será utilizada en el modelo ordinal para evaluar diferencias en juicios morales entre distintas etapas de la vida.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Crear grupos de edad por décadas
+trolley <- trolley |> 
+  mutate(
+    age_group = cut(age, breaks = seq(10, 80, by = 10), right = FALSE),
+    age_group = factor(age_group, ordered = TRUE)
+  )
+
+# Crear índice numérico para cada grupo de edad
+trolley <- trolley |> 
+  mutate(age_group_idx = as.integer(age_group))
+
+# Preparar lista de datos para ulam
+d_age <- list(
+  response = trolley$response,
+  action = trolley$action,
+  contact = trolley$contact,
+  intention = trolley$intention,
+  age_group = trolley$age_group_idx
+)
+
+```
+
+#### Planteamiento del Modelo
+
+Para evaluar el efecto de la edad en el juicio moral expresado por los participantes, se propone una extensión del modelo ordinal bayesiano previamente ajustado. En lugar de asumir una relación lineal entre edad y severidad del juicio, en esta versión se modela la **edad como una variable categórica ordenada por décadas**, permitiendo capturar posibles diferencias no lineales entre tramos etarios.
+
+La variable `age_group` se construyó dividiendo la edad en intervalos de 10 años, a partir de los 10 hasta los 80 años. Esta decisión se basa en la exploración empírica de la distribución de observaciones por grupo, donde se observó un equilibrio razonable entre los distintos tramos.
+
+El modelo resultante se especifica de la siguiente manera:
+
+\[
+\text{response} \sim \text{ordered logistic}(\phi, \text{cutpoints})
+\]
+\[
+\phi = \beta_A \cdot \text{action} + 
+       \beta_I \cdot \text{intention} + 
+       \beta_C \cdot \text{contact} + 
+       \beta_{AI} \cdot (\text{action} \cdot \text{intention}) + 
+       \beta_{CI} \cdot (\text{contact} \cdot \text{intention}) + 
+       \beta_{E[g]}
+\]
+
+\[
+\text{donde } g = \text{grupo de edad}
+\]
+
+Cada grupo de edad tiene su propio efecto \(\beta_{E[g]}\), estimado de manera **intercambiable** a través de una distribución normal con varianza común:
+
+\[
+\beta_{E[g]} \sim \text{Normal}(0, \sigma_{\text{age}}), \quad \sigma_{\text{age}} \sim \text{Exponential}(1)
+\]
+
+Este planteamiento permite capturar posibles diferencias en la propensión a emitir juicios morales severos entre grupos etarios, sin imponer una relación funcional específica entre edad y resultado. Además, la jerarquía impuesta a través de \(\sigma_{\text{age}}\) actúa como regularización bayesiana, evitando sobreajuste cuando el número de observaciones por grupo es desigual.
+
+Este enfoque es coherente con los principios expuestos en *Statistical Rethinking*, particularmente en el tratamiento de **efectos de grupo ordenados y modelado jerárquico de covariables discretas**.
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# Modelo con efectos específicos por grupo de edad
+m_age_group <- ulam(
+  alist(
+    response ~ ordered_logistic(phi, cutpoints),
+    phi <- bA * action +
+           bI * intention +
+           bC * contact +
+           bAI * action * intention +
+           bCI * contact * intention +
+           bE[age_group],
+    c(bA, bI, bC, bAI, bCI) ~ normal(0, 10),
+    bE[age_group] ~ normal(0, sigma_age),
+    sigma_age ~ exponential(1),
+    cutpoints ~ normal(0, 10)
+  ),
+  data = d_age,
+  chains = 4,
+  cores = 4,
+  log_lik = TRUE
+)
+
+```
+
+#### Interpretación de los Parámetros \(\beta_{E[g]}\)
+
+Cada grupo de edad tiene su propio efecto estimado, representado por \(\beta_{E[g]}\), el cual indica cómo se desplaza la propensión a emitir juicios morales más severos en comparación con el promedio global (ajustado por las variables del escenario).
+
+- Si \(\beta_{E[g]} > 0\): El grupo de edad \(g\) tiende a emitir juicios morales más condenatorios que el promedio general.
+- Si \(\beta_{E[g]} < 0\): El grupo de edad \(g\) tiende a emitir juicios más indulgentes.
+- Si \(\beta_{E[g]} \approx 0\): El grupo de edad no se diferencia sustancialmente del resto, una vez controlado por el escenario.
+
+Cabe señalar que los efectos están **regularizados jerárquicamente**, por lo que los grupos con menor información estarán más próximos al promedio.
+
+---
+
+#### Limitaciones
+
+- La edad, aunque se modela como factor ordenado, sigue siendo una **variable observacional y fija por individuo**, por lo que no permite inferencia causal.
+- El modelo no controla por otras covariables personales relevantes, como el nivel educativo, que podría estar correlacionado con la edad y confundir parcialmente los efectos.
+- Aunque se usa una estructura jerárquica, no se han incluido efectos aleatorios por individuo (`id`), lo que podría limitar la capacidad del modelo para capturar **variabilidad intra-individual** no explicada por el escenario.
+- Se asume que los efectos de grupo son **intercambiables**, lo cual es razonable bajo incertidumbre, pero también limita la posibilidad de capturar **tendencias sistemáticas no especificadas** (como una evolución gradual en el juicio moral).
+
+---
+
+#### Alcances del Modelo
+
+Este modelo permite:
+
+- Evaluar si distintos grupos etarios muestran **patrones sistemáticos y diferenciados** en sus respuestas a dilemas morales, controlando por el contexto del escenario.
+- Introducir una dimensión individual al análisis, avanzando más allá de los efectos del diseño experimental.
+- Aplicar un enfoque jerárquico que mejora la **estabilidad del modelo** y evita sobreajuste, especialmente en grupos con menor tamaño muestral.
+- Explorar posibles **hipótesis sobre el desarrollo del razonamiento moral** a lo largo del ciclo de vida.
+
+---
+
+#### ¿Es Útil Este Análisis?
+
+Sí. Este enfoque aporta valor al integrar características individuales —como la edad agrupada— dentro del análisis de juicios morales. Aunque no permite inferencias causales, **ofrece una aproximación estructurada, regularizada y comparativa** entre grupos, que enriquece la comprensión del fenómeno. Además, representa un paso natural y metodológicamente riguroso hacia modelos jerárquicos más completos en el futuro, donde se podrían integrar también efectos por individuo o por nivel educativo.
+
+### Distribución Estimada de Respuestas por Grupo de Edad
+
+La siguiente figura muestra cómo varía la distribución estimada de respuestas (categorías 1 a 7) en función del grupo de edad, bajo seis combinaciones distintas de las variables `action`, `contact` e `intention`. Cada panel representa una configuración específica del dilema moral, mientras que el eje horizontal representa los grupos de edad ordenados (`G1` a `G7`), y el eje vertical indica la probabilidad estimada para cada categoría.
+
+Las curvas trazadas corresponden a simulaciones extraídas de la distribución posterior del modelo. Esto permite observar no solo la tendencia central de las respuestas, sino también la **incertidumbre** y **variabilidad** estimada para cada grupo de edad en distintos escenarios. Las categorías están etiquetadas al borde derecho de cada gráfico, destacando especialmente la categoría 7, correspondiente al juicio moral más severo.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, out.width="100%", fig.align = 'center'}
+# Extraer muestras del modelo
+post_age <- extract.samples(m_age_group)
+post_age <- as.data.frame(post_age)
+
+# Grupos de edad: asumimos que hay 7 niveles (ajusta si hay más o menos)
+age_groups <- 1:7  # Índices de age_group ordenados
+
+# Combinaciones a graficar
+configs <- list(
+  list(action = 1, contact = 0, intention = 0),
+  list(action = 0, contact = 0, intention = 1),
+  list(action = 0, contact = 0, intention = 0),
+  list(action = 1, contact = 0, intention = 1),
+  list(action = 0, contact = 1, intention = 0),
+  list(action = 0, contact = 1, intention = 1)
+)
+
+titles <- c(
+  "action=1, contact=0, intention=0",
+  "action=0, contact=0, intention=1",
+  "action=0, contact=0, intention=0",
+  "action=1, contact=0, intention=1",
+  "action=0, contact=1, intention=0",
+  "action=0, contact=1, intention=1"
+)
+
+# Layout 2 filas × 3 columnas
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+# Graficar para cada combinación
+for (j in 1:length(configs)) {
+  cfg <- configs[[j]]
+  plot(1, 1, type = "n",
+       xlab = "Grupo de edad (índice)", ylab = "probabilidad",
+       xlim = range(age_groups), ylim = c(0, 1),
+       main = titles[j], xaxt = "n")
+
+  axis(1, at = age_groups, labels = paste("G", age_groups, sep=""))
+
+  pk_mean <- matrix(0, nrow = length(age_groups), ncol = 6)
+
+  for (s in 1:100) {
+    ak <- as.numeric(post_age[s, paste0("cutpoints.", 1:6)])
+    for (i in seq_along(age_groups)) {
+      age_idx <- age_groups[i]
+      phi <- post_age$bA[s] * cfg$action +
+             post_age$bI[s] * cfg$intention +
+             post_age$bC[s] * cfg$contact +
+             post_age$bAI[s] * cfg$action * cfg$intention +
+             post_age$bCI[s] * cfg$contact * cfg$intention +
+             as.numeric(post_age[s, paste0("bE.", age_idx)])
+
+      pk <- pordlogit(1:6, a = ak, phi = phi)
+      pk_mean[i, ] <- pk_mean[i, ] + pk
+
+      for (k in 1:6) {
+        lines(age_groups, pk_mean[, k] / s, col = col.alpha("#0058a8", 0.1), lwd = 2)
+      }
+    }
+  }
+
+  # Promedio final
+  pk_mean <- pk_mean / 100
+
+  for (k in 1:6) {
+    y_pos <- max(pk_mean[, k][7])
+    text(max(age_groups), y_pos - 0.03, labels = as.character(k), col = "#0058a8", cex = 0.85)
+  }
+
+  text(max(age_groups), 0.9, labels = "7", col = "#0058a8", cex = 0.85, pos = 3)
+}
+
+
+
+```
+
+
+Cada panel representa una configuración experimental distinta, permitiendo observar cómo el juicio moral cambia entre grupos etarios al mantener constante el escenario del dilema.
+
+#### Principales observaciones:
+
+- **Tendencias consistentes en los grupos centrales (G3–G5):** En casi todos los escenarios, los grupos etarios intermedios tienden a presentar mayor concentración en las categorías más altas (respuestas 6 y 7), lo que sugiere una mayor disposición a emitir juicios condenatorios en comparación con los extremos etarios.
+
+- **Grupos extremos con mayor dispersión:** Los grupos más jóvenes (`G1`) y más mayores (`G7`) muestran mayor variabilidad en las respuestas, con líneas que divergen más y, en algunos casos, se colapsan hacia valores cercanos a cero. Esto indica mayor incertidumbre en sus patrones de respuesta o menor coherencia interindividual.
+
+- **Importancia de la intención:** En los escenarios donde `intention = 1`, se observa sistemáticamente un desplazamiento de probabilidad hacia las categorías más altas (6 y 7), independientemente de la edad, lo cual refuerza el hallazgo de que la intención sigue siendo el factor más determinante en la evaluación moral.
+
+- **Efectos combinados de edad y contacto:** En los escenarios que incluyen contacto físico (`contact = 1`), el patrón de variabilidad entre grupos etarios se amplifica. Esto sugiere que la presencia de contacto modula de forma diferencial el juicio moral según la etapa de la vida.
+
+#### Interpretación general
+
+El análisis revela que los juicios morales ante dilemas del tipo *Trolley Problem* **no son constantes a lo largo del ciclo de vida**. Aunque no se puede afirmar una tendencia estrictamente creciente o decreciente, sí se observan **patrones diferenciados entre grupos de edad**, con mayor propensión a respuestas severas en los grupos centrales y mayor variabilidad en los extremos.
+
+Estas diferencias, estimadas de manera jerárquica e intercambiable a través del modelo bayesiano, refuerzan la necesidad de considerar factores individuales —como la edad— en el estudio del razonamiento moral. Este tipo de visualización permite, además, **cuantificar y comunicar la incertidumbre posterior** asociada a cada combinación de edad y escenario, ofreciendo una perspectiva robusta y completa sobre la variación moral en la muestra estudiada.
+
+### Probabilidad Estimada de Respuesta Máxima (Categoría 7)
+
+Una forma directa de interpretar el efecto de la edad sobre los juicios morales es analizar la **probabilidad de que un individuo emita la respuesta más severa**, es decir, una puntuación de **7 en la escala ordinal**. Esta categoría representa la condena moral más fuerte dentro del dilema evaluado, por lo que su análisis ofrece una lectura clara de la severidad percibida en cada escenario.
+
+Para estimar esta probabilidad, se utilizan las muestras posteriores del modelo bayesiano ajustado. En cada iteración del modelo, se calcula la variable latente \(\phi\) como una combinación lineal de los predictores (`action`, `contact`, `intention`) y del efecto correspondiente al grupo de edad. Luego, se aplica la función de verosimilitud ordinal para obtener la probabilidad de cada categoría. En particular, la **probabilidad de la respuesta 7** se obtiene como:
+
+\[
+P(y = 7) = 1 - P(y \leq 6)
+\]
+
+donde \(P(y \leq 6)\) es la probabilidad acumulada hasta el sexto punto de corte en la escala ordinal. Este cálculo se repite para cada grupo de edad, y se resume mediante la media y un intervalo de credibilidad del 89%.
+
+La figura siguiente presenta un resumen visual de estos resultados para seis combinaciones de las variables experimentales. Cada panel muestra cómo varía la **probabilidad estimada de emitir un juicio moral severo (respuesta = 7)** en función del grupo de edad, permitiendo comparar directamente las diferencias entre tramos etarios bajo distintas condiciones del dilema moral.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=4, out.width="100%", fig.align = 'center'}
+# Escenarios definidos
+escenarios <- list(
+  list(action = 1, contact = 0, intention = 0),
+  list(action = 0, contact = 0, intention = 1),
+  list(action = 0, contact = 0, intention = 0),
+  list(action = 1, contact = 0, intention = 1),
+  list(action = 0, contact = 1, intention = 0),
+  list(action = 0, contact = 1, intention = 1)
+)
+
+# Etiquetas para cada gráfico
+titulos <- c(
+  "a=1, c=0, i=0",
+  "a=0, c=0, i=1",
+  "a=0, c=0, i=0",
+  "a=1, c=0, i=1",
+  "a=0, c=1, i=0",
+  "a=0, c=1, i=1"
+)
+
+# Índices de grupos de edad
+age_groups <- 1:7
+
+# Crear lista de dataframes de resultados por escenario
+resultados <- map2(escenarios, titulos, function(cfg, titulo) {
+  p7 <- matrix(NA, nrow = 100, ncol = length(age_groups))
+  
+  for (s in 1:100) {
+    ak <- as.numeric(post_age[s, paste0("cutpoints.", 1:6)])
+    for (i in seq_along(age_groups)) {
+      phi <- post_age$bA[s] * cfg$action +
+             post_age$bI[s] * cfg$intention +
+             post_age$bC[s] * cfg$contact +
+             post_age$bAI[s] * cfg$action * cfg$intention +
+             post_age$bCI[s] * cfg$contact * cfg$intention +
+             as.numeric(post_age[s, paste0("bE.", age_groups[i])])
+      
+      p7[s, i] <- 1 - pordlogit(6, a = ak, phi = phi)
+    }
+  }
+  
+  p7_mean <- colMeans(p7)
+  p7_lower <- apply(p7, 2, quantile, probs = 0.055)
+  p7_upper <- apply(p7, 2, quantile, probs = 0.945)
+
+  tibble(
+    GrupoEdad = factor(paste0("G", age_groups), levels = paste0("G", age_groups)),
+    Prob_Media = p7_mean,
+    Inferior = p7_lower,
+    Superior = p7_upper,
+    Escenario = titulo
+  )
+})
+
+# Combinar todos los resultados
+df_p7_all <- bind_rows(resultados)
+
+# Graficar grid 2x3
+ggplot(df_p7_all, aes(x = GrupoEdad, y = Prob_Media)) +
+  geom_point(size = 2, color = "#0058a8") +
+  geom_errorbar(aes(ymin = Inferior, ymax = Superior), width = 0.2, color = "#0058a8") +
+  facet_wrap(~ Escenario, nrow = 2) +
+  labs(
+    title = "Probabilidad estimada de respuesta = 7 por grupo de edad",
+    subtitle = "Seis combinaciones de action, contact e intention",
+    x = "Grupo de edad",
+    y = "Probabilidad de respuesta = 7"
+  ) +
+  theme_minimal()
+
+
+```
+
+#### Análisis de Resultados: Probabilidad de Respuesta Máxima (Categoría 7)
+
+La figura muestra cómo varía la **probabilidad posterior estimada de emitir un juicio moral severo** (respuesta = 7) en función del grupo de edad, bajo seis combinaciones específicas de las variables `action`, `contact` e `intention`. Cada punto representa la media posterior de dicha probabilidad, acompañado por su intervalo de credibilidad al 89%.
+
+##### Principales hallazgos:
+
+- **El grupo G7 (mayores de 70 años)** destaca sistemáticamente por tener **una mayor probabilidad de emitir la respuesta más severa**, especialmente en los escenarios con intención (`i = 1`). Esta tendencia sugiere que los participantes de mayor edad **juzgan con mayor severidad moral** los dilemas, particularmente cuando se percibe una intención dañina, incluso si no hay acción ni contacto.
+
+- En los escenarios donde solo la **intención está activa** (`a=0, c=0, i=1`), o donde hay **intención con contacto** (`a=0, c=1, i=1`), se observa un **incremento pronunciado en la probabilidad de condena** a medida que avanza la edad, alcanzando su punto máximo en G7.
+
+- En contraste, los escenarios en los que la **intención está ausente** (`i=0`), incluso si hay acción (`a=1`) o contacto (`c=1`), muestran una **probabilidad considerablemente más baja** de emitir una respuesta 7 en todos los grupos de edad. Esto refuerza la idea de que la **intención es el factor más relevante** en la evaluación moral, mucho más que el acto físico o el contacto.
+
+- Los grupos etarios **intermedios (G3 a G5)** tienden a mantener niveles moderados de condena moral en casi todos los escenarios. Además, presentan los **intervalos más estrechos**, lo cual indica una **mayor consistencia interna** en sus juicios.
+
+- Los **grupos jóvenes (G1, G2)** y **mayores (G7)** exhiben una mayor variabilidad en sus estimaciones (intervalos más amplios), lo que puede deberse tanto a **mayor heterogeneidad de opiniones** como a **un menor tamaño muestral** en los extremos del espectro etario.
+
+##### Conclusión general
+
+Este análisis refuerza la idea de que el juicio moral no es homogéneo a lo largo de la vida. Aunque la intención emerge como el principal motor de la condena moral, su impacto es **amplificado en los participantes de mayor edad**, quienes muestran una clara propensión a considerar más gravemente las acciones intencionales, incluso en ausencia de contacto o acción directa.
+
+La modelación jerárquica permitió capturar de forma robusta estas diferencias entre grupos, y la visualización de la **respuesta 7 como categoría clave** facilita una interpretación accesible del fenómeno. En conjunto, los resultados muestran que los factores experimentales y las características individuales (como la edad) **interactúan de forma compleja** en la formación de juicios morales.
