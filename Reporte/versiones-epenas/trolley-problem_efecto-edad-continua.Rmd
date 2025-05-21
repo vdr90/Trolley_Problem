@@ -1,0 +1,237 @@
+---
+title: "Métodos Analíticos: Trolley Problem"
+subtitle: "Evaluación del Efecto de la Edad sobre las Decisiones Morales"
+output: html_document
+---
+
+<style>
+p {
+  text-align: justify;
+}
+</style>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+# Cargar librerías necesarias
+library(rethinking)   # Accede al conjunto de datos 'Trolley' y funciones estadísticas del libro Statistical Rethinking
+library(ggplot2)      # Permite crear gráficos elegantes y personalizables usando gramática de gráficos
+library(dplyr)        # Facilita la manipulación de datos con funciones encadenables (pipes)
+library(tidyr)        # Permite transformar y reestructurar data frames (pivotar, desanidar, etc.)
+library(tidyverse)
+
+# Cargar datos
+data(Trolley)
+d <- Trolley
+
+# Estandarizar edad
+trolley <- d |>
+  mutate(age_s = (age - mean(age)) / sd(age))
+
+d_age_cont <- list(
+  response = trolley$response,
+  action = trolley$action,
+  contact = trolley$contact,
+  intention = trolley$intention,
+  age_s = trolley$age_s
+)
+
+```
+
+
+#### Planteamiento del Modelo
+
+Para evaluar el efecto de la edad en el juicio moral expresado por los participantes, se propone una extensión del modelo ordinal bayesiano previamente ajustado. En esta versión, se modela la **edad como una variable continua estandarizada**, lo cual permite identificar directamente si existe una **tendencia sistemática** —creciente o decreciente— entre la edad y la permisividad moral en los dilemas presentados.
+
+Esta decisión metodológica responde a la hipótesis de que el juicio moral puede evolucionar a lo largo del ciclo de vida, y que este cambio podría manifestarse de forma gradual. Al incluir la edad de forma continua, se evita la pérdida de información que implicaría categorizarla arbitrariamente, y se facilita la interpretación directa del efecto estimado.
+
+El modelo ordinal resultante se especifica de la siguiente manera:
+
+\[
+\text{response} \sim \text{ordered logistic}(\phi, \text{cutpoints})
+\]
+\[
+\phi = \beta_A \cdot \text{action} + 
+       \beta_I \cdot \text{intention} + 
+       \beta_C \cdot \text{contact} + 
+       \beta_{AI} \cdot (\text{action} \cdot \text{intention}) + 
+       \beta_{CI} \cdot (\text{contact} \cdot \text{intention}) + 
+       \beta_{\text{age}} \cdot \text{age}_s
+\]
+
+donde `age_s` representa la **edad estandarizada** (es decir, centrada en su media y escalada por su desviación estándar).
+
+- Si el parámetro \(\beta_{\text{age}} > 0\), la edad está asociada con juicios morales **más permisivos** (más probabilidad de respuestas cercanas a 7).
+- Si \(\beta_{\text{age}} < 0\), la edad se relaciona con **mayor severidad moral** (más probabilidad de respuestas cercanas a 1).
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# Modelo con edad continua
+m_age <- ulam(
+  alist(
+    response ~ ordered_logistic(phi, cutpoints),
+    phi <- bA * action +
+           bI * intention +
+           bC * contact +
+           bAI * action * intention +
+           bCI * contact * intention +
+           bAge * age_s,
+    c(bA, bI, bC, bAI, bCI, bAge) ~ normal(0, 1),
+    cutpoints ~ normal(0, 1)
+  ),
+  data = d_age_cont,
+  chains = 4, 
+  cores = 4,
+  log_lik = TRUE
+)
+
+```
+
+#### Comparación de Modelos: WAIC del Modelo con Edad
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+waic_edad <- WAIC(m_age)
+waic_ref <- waic_edad$WAIC
+```
+
+Se calculó el WAIC (Watanabe-Akaike Information Criterion) para este modelo, obteniendo un valor de: **`r format(waic_ref, big.mark = ",")`**
+
+Este valor sirve como referencia para evaluar la calidad del ajuste comparado con otros modelos más simples (sin efectos por edad) o más complejos (que integren otras covariables individuales como educación o género). En este caso el WAIC es menor al del modelo más simple, lo que indica un mejor ajuste esperado fuera de la muestra.
+
+---
+
+#### Limitaciones
+
+- La edad sigue siendo una **variable observacional y fija por individuo**, por lo que este modelo no permite realizar **inferencias causales** estrictas, solo asociaciones estructuradas.
+- Aunque modelar la edad como continua permite detectar **tendencias sistemáticas** en los juicios morales a lo largo del ciclo de vida, se **asume una relación lineal**, lo cual puede no capturar variaciones no lineales más complejas.
+- El modelo **no controla por otras covariables relevantes**, como el nivel educativo o el género, que podrían estar correlacionadas con la edad y generar **confusión en la interpretación del efecto estimado**.
+- Tampoco se incluyen **efectos aleatorios por individuo** (`id`), lo cual limita la capacidad del modelo para representar **variabilidad intra-individual** o consistencia entre respuestas dentro de una misma persona.
+
+---
+
+#### Alcances del Modelo
+
+Este modelo permite:
+
+- Evaluar si existe una **tendencia creciente o decreciente** en la permisividad moral a medida que cambia la edad de los participantes.
+- Integrar un enfoque bayesiano con **visualización de incertidumbre posterior**, favoreciendo una comprensión probabilística del efecto de la edad en dilemas morales.
+
+---
+
+#### ¿Es Útil Este Análisis?
+
+Sí. Modelar la edad como variable continua estandarizada ofrece una **evaluación más precisa y flexible** del posible efecto del ciclo de vida sobre el juicio moral. Esta estrategia permite detectar si las personas mayores o más jóvenes tienden a emitir juicios más permisivos o más severos ante dilemas éticos, en una forma fácilmente interpretable.
+
+Aunque no permite establecer relaciones causales ni incorporar complejas interacciones sociales, este modelo representa un avance metodológico claro en relación con versiones más discretas o agrupadas, al ofrecer **mayor resolución, simplicidad interpretativa y solidez estadística** en la evaluación del efecto de la edad.
+
+---
+
+### Distribución Estimada de Respuestas en Función de la Edad
+
+La siguiente figura muestra cómo varía la distribución estimada de respuestas (categorías 1 a 7) en función del grupo de edad, bajo seis combinaciones distintas de las variables `action`, `contact` e `intention`. Cada panel representa una configuración específica del dilema moral, mientras que el eje horizontal representa los grupos de edad ordenados (`G1` a `G7`), y el eje vertical indica la probabilidad estimada para cada categoría.
+
+La siguiente figura muestra cómo varía la **distribución estimada de respuestas (categorías 1 a 7)** en función de la edad continua estandarizada, bajo seis combinaciones distintas de las variables `action`, `contact` e `intention`. Cada panel representa una configuración específica del dilema moral. El eje horizontal representa la **edad estandarizada** (donde 0 es la media, valores negativos indican personas más jóvenes y positivos personas mayores), y el eje vertical indica la probabilidad estimada para cada categoría de juicio moral.
+
+Las curvas trazadas corresponden a simulaciones extraídas de la **distribución posterior del modelo bayesiano**. Esto permite observar no solo la tendencia central de las respuestas, sino también su variabilidad estimada a lo largo del continuo de edad, capturando la relación funcional entre edad y juicio moral bajo diferentes contextos experimentales.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, out.width="100%", fig.align = 'center'}
+# Extraer muestras del modelo con edad continua
+post_age <- extract.samples(m_age)
+post_age <- as.data.frame(post_age)
+
+# Valores de edad estandarizada para graficar
+age_vals <- seq(-2, 2, length.out = 30)
+
+# Configuraciones de escenarios
+configs <- list(
+  list(action = 1, contact = 0, intention = 0),
+  list(action = 0, contact = 0, intention = 1),
+  list(action = 0, contact = 0, intention = 0),
+  list(action = 1, contact = 0, intention = 1),
+  list(action = 0, contact = 1, intention = 0),
+  list(action = 0, contact = 1, intention = 1)
+)
+
+titles <- c(
+  "action=1, contact=0, intention=0",
+  "action=0, contact=0, intention=1",
+  "action=0, contact=0, intention=0",
+  "action=1, contact=0, intention=1",
+  "action=0, contact=1, intention=0",
+  "action=0, contact=1, intention=1"
+)
+
+# Layout 2 filas × 3 columnas
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+for (j in 1:length(configs)) {
+  cfg <- configs[[j]]
+
+  plot(1, 1, type = "n",
+       xlab = "Edad estandarizada", ylab = "Probabilidad",
+       xlim = range(age_vals), ylim = c(0, 1),
+       main = titles[j])
+
+  pk_mean <- matrix(0, nrow = length(age_vals), ncol = 6)
+
+  for (s in 1:100) {
+    ak <- as.numeric(post_age[s, paste0("cutpoints.", 1:6)])
+
+    for (i in seq_along(age_vals)) {
+      age_std <- age_vals[i]
+
+      phi <- post_age$bA[s] * cfg$action +
+             post_age$bI[s] * cfg$intention +
+             post_age$bC[s] * cfg$contact +
+             post_age$bAI[s] * cfg$action * cfg$intention +
+             post_age$bCI[s] * cfg$contact * cfg$intention +
+             post_age$bAge[s] * age_std
+
+      pk <- pordlogit(1:6, a = ak, phi = phi)  # pk es un vector de largo 6
+      pk_mean[i, ] <- pk_mean[i, ] + pk
+
+      for (k in 1:6) {
+        lines(age_vals, pk_mean[, k] / s, col = col.alpha("#0058a8", 0.1), lwd = 2)
+      }
+    }
+  }
+
+  # Promedio final
+  pk_mean <- pk_mean / 100
+
+  for (k in 1:6) {
+    y_pos <- max(pk_mean[, k])
+    text(max(age_vals), y_pos - 0.03, labels = as.character(k), col = "#0058a8", cex = 0.85)
+  }
+
+  text(max(age_vals), 0.92, labels = "7", col = "#0058a8", cex = 0.85, pos = 3)
+}
+
+
+```
+
+---
+
+#### Principales observaciones:
+
+- **Tendencias suaves en la mayoría de los escenarios:** Se aprecia una evolución más gradual y lineal en las probabilidades. Las curvas muestran una ligera pendiente positiva en varios escenarios, lo cual sugiere que a mayor edad (estandarizada), aumenta la probabilidad de respuestas más permisivas.
+
+- **Efecto de la intención:** En los escenarios con `intention = 1`, se observa una mayor probabilidad de emitir respuestas altas (categoría 7), lo que refuerza que la intención es el factor más determinante en la evaluación moral, independientemente de la edad.
+
+- **El contacto modula el efecto de la edad:** En presencia de contacto físico (`contact = 1`), el gradiente asociado a la edad se hace más pronunciado en algunos casos. Esto indica que la combinación de contacto físico e intención podría amplificar la sensibilidad moral con la edad.
+
+#### Interpretación general
+
+El análisis con edad modelada de forma continua revela **tendencias más suaves y estables** en los juicios morales, presenta una **tendencia creciente** en la permisividad moral con la edad en ciertos escenarios, especialmente cuando la intención no está presente.
+
+Este resultado sugiere que los adultos mayores tienden a emitir juicios **ligeramente más indulgentes**, aunque el efecto es modesto y no uniforme en todos los contextos.
+
+---
+
+### Conclusión del Análisis con Edad como Variable Continua
+
+El análisis realizado con edad modelada como una **variable continua estandarizada** permite una evaluación más fina del posible efecto gradual de la edad sobre los juicios morales emitidos por los participantes ante dilemas del tipo *Trolley Problem*. Al incorporar directamente la edad en la expresión lineal del modelo ordinal bayesiano, se evita la necesidad de agrupar artificialmente la variable y se obtiene una estimación más parsimoniosa y eficiente del efecto etario.
+
+En términos generales, los resultados sugieren que el efecto de la edad es **relativamente estable y de magnitud moderada**, con ligeras inclinaciones en algunos escenarios hacia respuestas más permisivas o más condenatorias conforme se incrementa la edad estandarizada. Sin embargo, **no se observa una tendencia clara o uniforme** que indique que los juicios morales se vuelvan sistemáticamente más severos o indulgentes con la edad. Esto refuerza la idea de que la edad, en su forma continua, **no opera como un determinante fuerte** del juicio moral por sí sola, aunque puede interactuar sutilmente con otras variables contextuales como la intención o el contacto físico.
+
+Finalmente, aunque este enfoque ofrece ventajas en términos de simplicidad y poder estadístico, también implica una **limitación interpretativa**, ya que cualquier **no linealidad potencial queda fuera del alcance** del modelo actual. Por ello, futuros análisis podrían explorar extensiones no lineales (e.g., splines bayesianos) o comparaciones con modelos categóricos para evaluar si la edad afecta el juicio moral de manera más compleja o segmentada.
+

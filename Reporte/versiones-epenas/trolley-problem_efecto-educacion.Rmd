@@ -1,6 +1,6 @@
 ---
-title: "Trolley Problem: Proyecto Final"
-author: "Equipo: Valeria Durán Rubio, Rosendo Iván García Alba, Eduardo Antonio Peña Sandoval"
+title: "Métodos Analíticos: Trolley Problem"
+subtitle: "Evaluación del Efecto del Nivel Educativo sobre las Decisiones Morales"
 output: html_document
 ---
 
@@ -24,8 +24,6 @@ data(Trolley)
 d <- Trolley
 
 ```
-
-### Evaluación del Efecto del Nivel Educativo sobre las Decisiones Morales
 
 #### Distribución de Observaciones por Nivel Educativo
 
@@ -72,6 +70,47 @@ knitr::kable(df_edu_group,
 
 Como se puede observar, la distribución de observaciones es razonablemente balanceada a lo largo de los niveles educativos, aunque existen diferencias en la densidad de casos por nivel. Esta evaluación permite justificar el modelado del nivel educativo como una variable categórica ordenada.
 
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Colapsar los tres primeros niveles educativos
+trolley <- trolley |> 
+  mutate(
+    edu_collapsed = case_when(
+      edu %in% c("Elementary School", "Middle School", "Some High School") ~ "Up to Some High School",
+      TRUE ~ as.character(edu)
+    )
+  )
+
+# Definir el nuevo orden de niveles con el grupo colapsado al inicio
+niveles_colapsados <- c(
+  "Up to Some High School",
+  "High School Graduate",
+  "Some College",
+  "Bachelor's Degree",
+  "Master's Degree",
+  "Graduate Degree"
+)
+
+# Reconvertir a factor ordenado
+trolley <- trolley |> 
+  mutate(
+    edu_group = factor(edu_collapsed, levels = niveles_colapsados, ordered = TRUE),
+    edu_group_idx = as.integer(edu_group)
+  )
+
+```
+
+#### Agrupación de Niveles Educativos con Baja Frecuencia
+
+Durante la exploración inicial del conjunto de datos, se observó que los niveles educativos **"Elementary School"**, **"Middle School"** y **"Some High School"** presentaban un número de observaciones relativamente bajo, con 60, 120 y 420 respuestas respectivamente. Esta baja frecuencia en los grupos más bajos del sistema educativo generaba preocupación respecto a la **estabilidad y precisión de las estimaciones posteriores** dentro del modelo jerárquico.
+
+Para abordar esta limitación, se optó por **agrupar estos tres niveles en una sola categoría denominada** *"Up to Some High School"*. Esta decisión permite:
+
+- Aumentar el tamaño muestral del grupo educativo más bajo y, por ende, **reducir la varianza de sus estimaciones**.
+- Evitar **sobreajuste** y problemas de regularización excesiva en grupos con escasa información.
+- Facilitar la **interpretación comparativa** entre niveles educativos, al mantener una estructura más balanceada de tamaños de grupo.
+
+El nuevo esquema consta de **seis niveles educativos ordenados**, desde *"Up to Some High School"* hasta *"Graduate Degree"*, lo que preserva la jerarquía natural de la variable y mantiene el enfoque de modelado ordinal. Esta transformación es coherente con prácticas comunes en análisis jerárquico, donde se prioriza el balance entre granularidad y robustez estadística.
+
 
 #### Planteamiento del Modelo
 
@@ -103,7 +142,6 @@ Cada grupo educativo tiene su propio efecto \(\beta_{E[g]}\), estimado de manera
 
 Esta estructura permite modelar diferencias entre niveles educativos de manera flexible, regularizando los efectos cuando el número de observaciones por nivel es reducido. Esta aproximación está alineada con los principios del modelado jerárquico bayesiano propuestos en *Statistical Rethinking*.
 
-
 ```{r message=FALSE, warning=FALSE, results='hide'}
 # Preparar lista de datos
 d_edu <- list(
@@ -132,17 +170,27 @@ m_edu_group <- ulam(
   data = d_edu,
   chains = 4,
   cores = 4,
+  
   log_lik = TRUE
 )
 
 ```
 
+#### Comparación de Modelos: WAIC del Modelo con Grupos de Edad
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+waic_edu <- WAIC(m_edu_group)
+waic_ref <- waic_edu$WAIC
+```
+
+Este valor sirve como referencia para evaluar la calidad del ajuste comparado con otros modelos más simples (sin efectos por edad) o más complejos (que integren otras covariables individuales como educación o género). En este caso el WAIC es menor al del modelo más simple y al del modelo con efectos por edad coomo variable continua, lo que indica un mejor ajuste esperado fuera de la muestra.
+
 #### Interpretación de los Parámetros \(\beta_{E[g]}\)
 
-Cada grupo de educativo tiene su propio efecto estimado, representado por \(\beta_{E[g]}\), el cual indica cómo se desplaza la propensión a emitir juicios morales más severos en comparación con el promedio global (ajustado por las variables del escenario).
+Cada grupo de educativo tiene su propio efecto estimado, representado por \(\beta_{E[g]}\), el cual indica cómo se desplaza la propensión a emitir juicios morales más permisivos en comparación con el promedio global (ajustado por las variables del escenario).
 
-- Si \(\beta_{E[g]} > 0\): El nivel educativo \(g\) tiende a emitir juicios morales más condenatorios que el promedio general.
-- Si \(\beta_{E[g]} < 0\): El nivel educativo \(g\) tiende a emitir juicios más indulgentes.
+- Si \(\beta_{E[g]} > 0\): El nivel educativo \(g\) tiende a emitir juicios morales más permisivos que el promedio general.
+- Si \(\beta_{E[g]} < 0\): El nivel educativo \(g\) tiende a emitir juicios más severos.
 - Si \(\beta_{E[g]} \approx 0\): El nivel educativo no se diferencia sustancialmente del resto, una vez controlado por el escenario.
 
 Cabe señalar que los efectos están **regularizados jerárquicamente**, por lo que los grupos con menor información estarán más próximos al promedio.
@@ -180,7 +228,7 @@ Sí. Este enfoque permite integrar el nivel educativo como una característica e
 
 La siguiente figura muestra cómo varía la distribución estimada de respuestas (categorías 1 a 7) en función del nivel educativo, bajo seis combinaciones distintas de las variables `action`, `contact` e `intention`. Cada panel representa una configuración específica del dilema moral, mientras que el eje horizontal representa los niveles educativos ordenados (de menor a mayor escolaridad), y el eje vertical indica la probabilidad estimada para cada categoría.
 
-Las curvas trazadas corresponden a simulaciones extraídas de la distribución posterior del modelo. Esto permite observar no solo la tendencia central de las respuestas, sino también la **incertidumbre** y **variabilidad** estimada para cada nivel educativo en distintos escenarios. Las categorías están etiquetadas al borde derecho de cada gráfico, destacando especialmente la categoría 7, correspondiente al juicio moral más severo.
+Las curvas trazadas corresponden a simulaciones extraídas de la distribución posterior del modelo. Esto permite observar no solo la tendencia central de las respuestas, sino también la **incertidumbre** y **variabilidad** estimada para cada nivel educativo en distintos escenarios. Las categorías están etiquetadas al borde derecho de cada gráfico, destacando especialmente la categoría 7, correspondiente al juicio moral más indulgente.
 
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, out.width="100%", fig.align = 'center'}
@@ -188,8 +236,8 @@ Las curvas trazadas corresponden a simulaciones extraídas de la distribución p
 post_edu <- extract.samples(m_edu_group)
 post_edu <- as.data.frame(post_edu)
 
-# Grupos educativos: asumimos que hay 8 niveles (ajustar si hay más o menos)
-edu_groups <- 1:8  # índices de edu_group ordenados
+# Grupos educativos: asumimos que hay 6 niveles
+edu_groups <- 1:6  # índices de edu_group ordenados
 
 # Combinaciones a graficar
 configs <- list(
@@ -217,7 +265,7 @@ par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
 for (j in 1:length(configs)) {
   cfg <- configs[[j]]
   plot(1, 1, type = "n",
-       xlab = "Nivel educativo (G1-G8)", ylab = "probabilidad",
+       xlab = "Nivel educativo (G1-G6)", ylab = "probabilidad",
        xlim = range(edu_groups), ylim = c(0, 1),
        main = titles[j], xaxt = "n")
 
@@ -258,23 +306,24 @@ for (j in 1:length(configs)) {
 ```
 
 
-Cada panel representa una configuración experimental distinta, permitiendo observar cómo el juicio moral cambia entre niveles educativos al mantener constante el escenario del dilema.
+Cada panel representa una configuración experimental distinta, permitiendo observar cómo varía la distribución estimada de respuestas morales (categorías 1 a 7) entre niveles educativos, manteniendo constante el escenario del dilema moral definido por las variables `action`, `contact` e `intention`.
 
 #### Principales observaciones:
 
-- **Tendencias consistentes entre niveles intermedios (G4–G6):** En múltiples escenarios, los grupos educativos intermedios (por ejemplo, "High School Graduate" a "Bachelor's Degree") muestran una mayor concentración en las categorías altas (respuestas 6 y 7), lo que sugiere una mayor disposición a emitir juicios morales más severos.
+- **Patrones consistentes en niveles intermedios y altos (G3–G5):** En la mayoría de los escenarios, los grupos con escolaridad desde “High School Graduate” hasta “Master’s Degree” tienden a concentrar mayor probabilidad en las categorías más altas (respuestas 6 y 7). Esto indica una **mayor inclinación hacia juicios morales permisivos** conforme aumenta el nivel educativo.
 
-- **Grupos extremos con mayor variabilidad:** Los niveles educativos más bajos (`G1`, `G2`) y más altos (`G8`) presentan mayor dispersión en las respuestas. Las líneas asociadas a estos grupos divergen más entre sí y, en ocasiones, se concentran en valores extremos (cercanos a 0 o 1), indicando mayor heterogeneidad en las intuiciones morales de esos segmentos.
+- **Grupos con menor escolaridad con mayor dispersión:** Los grupos G1 y G2, que agrupan niveles de educación básica, presentan mayor variabilidad en sus respuestas. Las líneas asociadas a estos grupos se distribuyen con menor regularidad, lo cual sugiere **una menor consistencia interna** en sus juicios morales o mayor heterogeneidad en las intuiciones éticas.
 
-- **Intención como factor dominante:** Al igual que en análisis anteriores, los escenarios con `intention = 1` muestran un desplazamiento sistemático de la masa de probabilidad hacia las respuestas más severas (categorías 6 y 7), independientemente del nivel educativo. Este patrón reafirma que la intención del agente es el elemento más influyente en el juicio moral.
+- **Dominancia del efecto de la intención:** En todos los escenarios donde `intention = 1`, se observa un **desplazamiento hacia las respuestas más permisivas**, lo cual refuerza el hallazgo de que la percepción de intencionalidad **sigue siendo el principal determinante del juicio moral**, independientemente del nivel educativo.
 
-- **Interacción entre contacto y educación:** En condiciones con contacto físico (`contact = 1`), los grupos con mayor escolaridad tienden a mostrar respuestas más consistentes y condenatorias. Esto sugiere que una mayor formación educativa puede amplificar la sensibilidad moral ante el uso de medios físicos para causar daño.
+- **Interacción entre contacto físico y educación:** En presencia de contacto (`contact = 1`), los niveles más altos de educación tienden a mostrar **respuestas más estructuradas y con menor dispersión**, lo cual puede indicar que **una mayor escolarización modera de forma más sistemática** la forma en que se juzga el uso de medios físicos en contextos moralmente sensibles.
 
 #### Interpretación general
 
-Los resultados indican que las respuestas a dilemas morales como el *Trolley Problem* **varían de forma sistemática según el nivel educativo**. Aunque no se identifica un patrón estrictamente monótono (creciente o decreciente), sí se observa una mayor consistencia y severidad en los niveles intermedios y altos de educación formal.
+Este análisis muestra que los juicios morales ante dilemas tipo *Trolley Problem* **varían de forma estructurada con el nivel educativo**. Aunque no se identifica un gradiente completamente monótono, sí se evidencia **una mayor coherencia y permisividad moral** conforme aumenta el grado de escolaridad, particularmente en escenarios con intención.
 
-Estas estimaciones, obtenidas a través de un modelo bayesiano ordinal con efectos jerárquicos por grupo educativo, permiten capturar diferencias estructuradas entre segmentos poblacionales. Además, la visualización generada comunica con claridad la **incertidumbre posterior** y las tendencias dominantes en cada escenario experimental. Esto refuerza la importancia de considerar el **nivel educativo como un moderador relevante del juicio moral**, complementando la influencia de los factores del escenario (acción, intención y contacto).
+Estas tendencias fueron capturadas a través de un **modelo bayesiano ordinal con efectos jerárquicos por grupo educativo**, que permite representar de forma robusta la heterogeneidad estructurada en la población. Además, las gráficas permiten visualizar la **incertidumbre posterior y la regularidad de los patrones** según la condición experimental, subrayando la importancia de incorporar **características individuales como la educación** en el análisis del juicio moral.
+
 
 
 ### Probabilidad Estimada de Respuesta Máxima (Categoría 7)
@@ -311,7 +360,7 @@ titulos <- c(
   "a=0, c=1, i=1"
 )
 
-edu_groups <- 1:8
+edu_groups <- 1:6
 
 # Crear lista de resultados
 resultados <- map2(escenarios, titulos, function(cfg, titulo) {
@@ -347,6 +396,8 @@ resultados <- map2(escenarios, titulos, function(cfg, titulo) {
 # Unir resultados
 df_p7_all <- bind_rows(resultados)
 
+
+
 # Graficar
 ggplot(df_p7_all, aes(x = GrupoEdu, y = Prob_Media)) +
   geom_point(size = 2, color = "#0058a8") +
@@ -359,52 +410,29 @@ ggplot(df_p7_all, aes(x = GrupoEdu, y = Prob_Media)) +
     y = "Probabilidad de respuesta = 7"
   ) +
   theme_minimal()
+
 ```
 
 #### Análisis de Resultados: Probabilidad de Respuesta Máxima (Categoría 7)
 
-La figura muestra cómo varía la **probabilidad posterior estimada de emitir un juicio moral severo** (respuesta = 7) en función del nivel educativo, bajo seis combinaciones específicas de las variables `action`, `contact` e `intention`. Cada punto representa la media posterior de dicha probabilidad, acompañado por su intervalo de credibilidad al 89%.
+La figura muestra cómo varía la **probabilidad posterior estimada de emitir un juicio moral permisivo** (respuesta = 7) en función del nivel educativo agrupado en seis niveles (`G1` a `G6`), bajo seis combinaciones específicas de las variables `action`, `contact` e `intention`. Cada punto representa la media posterior de dicha probabilidad, acompañado por su intervalo de credibilidad al 89%.
 
 ##### Principales hallazgos:
 
-- **Los niveles educativos más bajos (G1 y G2)** presentan, en varios escenarios, **probabilidades más altas de emitir juicios morales severos**. Esta tendencia es particularmente clara en los casos donde la intención está presente (`i = 1`), lo que sugiere que los participantes con menor escolaridad tienden a condenar con más fuerza las acciones percibidas como intencionales, incluso sin contacto o acción directa.
+- **Niveles bajos de educación (G1 y G2)** tienden a mostrar las **probabilidades más altas de emitir una respuesta 7**, particularmente en los escenarios donde la intención está ausente (`i = 0`). Esto sugiere una mayor disposición a considerar moralmente aceptables las acciones si no hay intención de dañar.
 
-- A medida que **aumenta el nivel educativo**, se observa una **disminución sistemática en la probabilidad de respuesta 7**, sobre todo en los escenarios más severos (`i = 1`). Esto podría interpretarse como una mayor propensión a matizar el juicio moral conforme se avanza en la trayectoria educativa.
+- **Descenso progresivo en niveles medios-altos (G3–G6):** Conforme aumenta el nivel educativo, se observa una **disminución progresiva en la probabilidad de emitir juicios permisivos**, especialmente en escenarios donde la intención está presente. Esto indica que los individuos con mayor formación académica tienden a ser más estrictos cuando perciben intención en las acciones evaluadas.
 
-- En los escenarios donde la **intención está ausente** (`i = 0`), las probabilidades de emitir una respuesta condenatoria son bajas en todos los niveles educativos. Este patrón refuerza que la intención es el **factor más relevante en la evaluación moral**, superando en peso a la acción o al contacto.
+- **Consistencia en niveles intermedios (G3–G5):** Estos grupos presentan **estimaciones más estables y homogéneas**, con intervalos de credibilidad más estrechos. Esto sugiere un patrón compartido en sus juicios morales, posiblemente vinculado a una etapa educativa común y una mayor exposición a razonamientos normativos complejos.
 
-- Los grupos intermedios de escolaridad (G4 a G6), que corresponden a niveles como "High School Graduate" y "Bachelor’s Degree", muestran estimaciones más consistentes y moderadas, con **intervalos de credibilidad más estrechos**, lo cual indica **mayor homogeneidad en las respuestas**.
+- **Rol dominante de la intención:** En todos los niveles educativos, la **presencia de intención (`i = 1`) reduce de manera sustancial la probabilidad de emitir una respuesta permisiva**. Este efecto es claro y consistente, lo que refuerza que la intención del agente es el factor más relevante en la evaluación moral.
 
-- En contraste, **los extremos del espectro educativo** (G1 y G8) exhiben mayor incertidumbre (intervalos más amplios), lo cual puede atribuirse a **una mayor heterogeneidad de opiniones o menor cantidad de observaciones** en esos niveles.
+- **Mayor incertidumbre en los extremos (G1 y G6):** Los niveles más bajos y más altos de educación presentan **intervalos más amplios**, reflejando mayor heterogeneidad de respuestas o menor tamaño muestral. Esto podría indicar interpretaciones morales más diversas dentro de esos grupos.
 
 ##### Conclusión general
 
-Este análisis evidencia que los juicios morales no solo están determinados por el contexto del dilema, sino que también dependen de **características individuales como el nivel educativo**. En particular, la tendencia hacia respuestas más indulgentes en los niveles educativos más altos podría reflejar una **mayor complejidad en la evaluación moral** aprendida a lo largo del proceso educativo.
+Este análisis evidencia que los juicios morales no son homogéneos a lo largo del espectro educativo. Mientras que los grupos con menor educación muestran mayor permisividad en ausencia de intención, los niveles más altos adoptan posturas más restrictivas, sobre todo cuando se percibe daño intencional.
 
-La estimación de la **probabilidad de respuesta 7** permite interpretar de manera directa y clara la severidad moral percibida por grupo. Combinado con la modelación jerárquica bayesiana, este enfoque ofrece una representación robusta y matizada de cómo la formación académica influye en la manera en que se juzgan dilemas morales.
+La modelación jerárquica por grupo educativo, junto con la visualización de la probabilidad de respuesta 7 como medida de permisividad moral, permite una **lectura clara, comparativa y matizada** del impacto del nivel educativo sobre las decisiones morales. Estos resultados refuerzan la utilidad de incorporar **factores individuales** en el análisis de dilemas éticos, reconociendo que la formación académica puede influir en la forma en que las personas evalúan situaciones moralmente complejas.
 
-### Reflexiones sobre lo que puede (y no puede) estimarse con encuestas
-
-Este ejercicio permite entender que, mediante encuestas, podemos estimar **asociaciones estructuradas** entre variables —como edad o nivel educativo— y respuestas a dilemas morales. Gracias al enfoque bayesiano, es posible modelar **efectos condicionales**, explorar **variabilidad entre grupos** y representar explícitamente la **incertidumbre posterior**.
-
-Sin embargo, una encuesta **no permite inferencia causal directa**, especialmente si no hay aleatorización ni control sobre la asignación de condiciones. Factores como la edad o el nivel educativo no se manipulan, por lo que **las diferencias observadas pueden deberse a variables no medidas**, como ideología, religión o experiencias previas.
-
-Para mejorar la validez de este tipo de análisis es clave:
-- Controlar o ajustar por posibles **variables de confusión**.
-- Considerar el riesgo de **sesgo de selección**.
-- No sobreinterpretar correlaciones como causales.
-- Utilizar estructuras jerárquicas para capturar **variabilidad estructural**.
-
----
-
-### Limitaciones del uso de encuestas en dilemas hipotéticos
-
-Trabajar con datos de encuestas sin conocer el origen de los participantes impone límites importantes:
-
-- **Posible sesgo de selección**: No sabemos si quienes respondieron son sistemáticamente distintos del resto de la población.
-- **Falta de contexto sociocultural**: Variables como religión o nacionalidad, que podrían influir fuertemente en el juicio moral, no están disponibles.
-- **Naturaleza hipotética del dilema**: Las respuestas dadas pueden diferir de lo que las personas harían en un contexto real, afectadas por normas sociales o deseabilidad de respuesta.
-- **Imposibilidad de generalización**: Sin información geográfica o cultural, no podemos saber si los patrones son universales o localizados.
-
-En síntesis, los resultados permiten generar hipótesis robustas sobre intuiciones morales, pero no deben interpretarse como verdades causales. El uso de encuestas ofrece valor exploratorio, pero requiere cautela metodológica al interpretar sus resultados.
 

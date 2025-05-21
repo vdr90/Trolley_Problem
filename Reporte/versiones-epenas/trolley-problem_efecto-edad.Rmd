@@ -1,0 +1,445 @@
+---
+title: "Métodos Analíticos: Trolley Problem"
+subtitle: "Evaluación del Efecto de la Edad sobre las Decisiones Morales"
+output: html_document
+---
+
+<style>
+p {
+  text-align: justify;
+}
+</style>
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+# Cargar librerías necesarias
+library(rethinking)   # Accede al conjunto de datos 'Trolley' y funciones estadísticas del libro Statistical Rethinking
+library(ggplot2)      # Permite crear gráficos elegantes y personalizables usando gramática de gráficos
+library(dplyr)        # Facilita la manipulación de datos con funciones encadenables (pipes)
+library(tidyr)        # Permite transformar y reestructurar data frames (pivotar, desanidar, etc.)
+library(tidyverse)
+
+# Cargar datos
+data(Trolley)
+d <- Trolley
+
+```
+
+#### Distribución de Observaciones por Grupos de Edad
+
+Con el fin de evaluar el efecto de la edad sobre las decisiones morales, primero exploramos cómo se distribuyen las observaciones en distintos tramos de edad. Se consideraron dos esquemas de agrupación: intervalos de **5 años** y de **10 años**, iniciando en los 10 años de edad y extendiéndose hasta los 80 años.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Manejo de los datos
+trolley <- d |> 
+  select(-case,-action2, -order)  # Eliminar columnas innecesarias
+
+# Crear agrupaciones por edad (5 años y 10 años)
+trolley <- trolley |> 
+  mutate(
+    age_group_5 = cut(age, breaks = seq(10, 80, by = 5), right = FALSE),
+    age_group_10 = cut(age, breaks = seq(10, 80, by = 10), right = FALSE)
+  )
+
+# Contar número de observaciones por grupo
+conteo_edad <- full_join(
+  trolley |> count(age_group_5) |> rename(`Grupo (5 años)` = age_group_5, `n (5)` = n),
+  trolley |> count(age_group_10) |> rename(`Grupo (10 años)` = age_group_10, `n (10)` = n),
+  by = character()
+)
+
+# Crear dataframe para cada agrupación
+df_age_group_5 <- trolley |> 
+  count(age_group_5) |> 
+  arrange(age_group_5) |> 
+  mutate(n = format(n, big.mark = ",")) |>
+  rename(`Grupo de edad (5 años)` = age_group_5, Frecuencia = n)
+
+df_age_group_10 <- trolley |> 
+  count(age_group_10) |> 
+  arrange(age_group_10) |> 
+  mutate(n = format(n, big.mark = ",")) |>
+  rename(`Grupo de edad (10 años)` = age_group_10, Frecuencia = n)
+```
+
+La siguiente tabla muestra la **distribución de observaciones por grupo de edad** para cada uno de los esquemas:
+
+**Agrupación en tramos de 5 años**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(df_age_group_5, 
+             col.names = c("Grupo de edad (5 años)", "Número de observaciones"),
+             caption = "Distribución por tramos de 5 años")
+```
+
+**Agrupación en tramos de 10 años**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(df_age_group_10, 
+             col.names = c("Grupo de edad (10 años)", "Número de observaciones"),
+             caption = "Distribución por tramos de 10 años")
+```
+
+Como se puede observar, algunos tramos presentan una menor cantidad de observaciones, especialmente en los extremos del rango etario. Esta evaluación es útil para identificar si es viable modelar la edad como una variable categórica ordenada, o si será necesario reagrupar ciertos intervalos para evitar problemas de estimación por escasez de datos.
+
+En los siguientes pasos, seleccionaremos el esquema de agrupación de 10 años, que resulta más equilibrado para construir una variable auxiliar de grupos de edad, la cual será utilizada en el modelo ordinal para evaluar diferencias en juicios morales entre distintas etapas de la vida.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Crear grupos de edad personalizados (fusionar últimas dos décadas)
+trolley <- trolley |> 
+  mutate(
+    age_group = cut(
+      age,
+      breaks = c(10, 20, 30, 40, 50, 60, 80),  # Nota el salto directo a 80
+      right = FALSE,
+      labels = c("[10,20)", "[20,30)", "[30,40)", "[40,50)", "[50,60)", "[60,80)")
+    ),
+    age_group = factor(age_group, ordered = TRUE)
+  )
+
+# Crear índice numérico para cada grupo de edad
+trolley <- trolley |> 
+  mutate(age_group_idx = as.integer(age_group))
+
+# Preparar lista de datos para ulam
+d_age <- list(
+  response = trolley$response,
+  action = trolley$action,
+  contact = trolley$contact,
+  intention = trolley$intention,
+  age_group = trolley$age_group_idx
+)
+
+```
+
+
+#### Decisión sobre Agrupamiento de Edad
+
+Durante la exploración inicial de la variable `edad`, se identificó que algunos grupos etarios —particularmente el intervalo de **70 a 80 años**— contaban con un número considerablemente menor de observaciones (solo 60 registros), en comparación con otros grupos. Esta disparidad puede afectar negativamente la estabilidad de las estimaciones del modelo, especialmente en un enfoque jerárquico bayesiano, donde los grupos con pocos datos tienden a ser fuertemente regularizados hacia la media global.
+
+Para mitigar este problema, se optó por **agrupar los tramos `[60,70)` y `[70,80)` en una sola categoría `[60,80)`**, generando así un grupo más robusto con un total de 750 observaciones. Esta decisión reduce el número total de grupos de edad de 7 a 6, sin comprometer la capacidad del modelo para capturar patrones significativos en el juicio moral a lo largo del ciclo de vida.
+
+Esta estrategia es consistente con buenas prácticas de modelado en presencia de tamaños muestrales dispares y se alinea con el principio de regularización jerárquica expuesto en *Statistical Rethinking*, priorizando una **representación equilibrada de los grupos sin perder resolución interpretativa**.
+
+#### Planteamiento del Modelo
+
+Para evaluar el efecto de la edad en el juicio moral expresado por los participantes, se propone una extensión del modelo ordinal bayesiano previamente ajustado. En lugar de asumir una relación lineal entre edad y permisividad del juicio, en esta versión se modela la **edad como una variable categórica ordenada por décadas**, permitiendo capturar posibles diferencias no lineales entre tramos etarios.
+
+La variable `age_group` se construyó dividiendo la edad en intervalos de 10 años, a partir de los 10 hasta los 80 años. Esta decisión se basa en la exploración empírica de la distribución de observaciones por grupo, donde se observó un equilibrio razonable entre los distintos tramos.
+
+El modelo resultante se especifica de la siguiente manera:
+
+\[
+\text{response} \sim \text{ordered logistic}(\phi, \text{cutpoints})
+\]
+\[
+\phi = \beta_A \cdot \text{action} + 
+       \beta_I \cdot \text{intention} + 
+       \beta_C \cdot \text{contact} + 
+       \beta_{AI} \cdot (\text{action} \cdot \text{intention}) + 
+       \beta_{CI} \cdot (\text{contact} \cdot \text{intention}) + 
+       \beta_{E[g]}
+\]
+
+\[
+\text{donde } g = \text{grupo de edad}
+\]
+
+Cada grupo de edad tiene su propio efecto \(\beta_{E[g]}\), estimado de manera **intercambiable** a través de una distribución normal con varianza común:
+
+\[
+\beta_{E[g]} \sim \text{Normal}(0, \sigma_{\text{age}}), \quad \sigma_{\text{age}} \sim \text{Exponential}(1)
+\]
+
+Este planteamiento permite capturar posibles diferencias en la propensión a emitir juicios morales permisivos entre grupos etarios, sin imponer una relación funcional específica entre edad y resultado. Además, la jerarquía impuesta a través de \(\sigma_{\text{age}}\) actúa como regularización bayesiana, evitando sobreajuste cuando el número de observaciones por grupo es desigual.
+
+Este enfoque es coherente con los principios expuestos en *Statistical Rethinking*, particularmente en el tratamiento de **efectos de grupo ordenados y modelado jerárquico de covariables discretas**.
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# Modelo con efectos específicos por grupo de edad
+m_age_group <- ulam(
+  alist(
+    response ~ ordered_logistic(phi, cutpoints),
+    phi <- bA * action +
+           bI * intention +
+           bC * contact +
+           bAI * action * intention +
+           bCI * contact * intention +
+           bE[age_group],
+    c(bA, bI, bC, bAI, bCI) ~ normal(0, 10),
+    bE[age_group] ~ normal(0, sigma_age),
+    sigma_age ~ exponential(1),
+    cutpoints ~ normal(0, 10)
+  ),
+  data = d_age,
+  chains = 4,
+  cores = 4,
+  log_lik = TRUE
+)
+
+```
+
+
+#### Interpretación de los Parámetros \(\beta_{E[g]}\)
+
+Cada grupo de edad tiene su propio efecto estimado, representado por \(\beta_{E[g]}\), el cual indica cómo se desplaza la propensión a emitir juicios morales más permisivos en comparación con el promedio global (ajustado por las variables del escenario).
+
+- Si \(\beta_{E[g]} > 0\): El grupo de edad \(g\) tiende a emitir juicios morales más permisivos.
+- Si \(\beta_{E[g]} < 0\): El grupo de edad \(g\) tiende a emitir juicios más condenatorios.
+- Si \(\beta_{E[g]} \approx 0\): El grupo de edad no se diferencia sustancialmente del resto, una vez controlado por el escenario.
+
+Cabe señalar que los efectos están **regularizados jerárquicamente**, por lo que los grupos con menor información estarán más próximos al promedio.
+
+---
+
+#### Comparación de Modelos: WAIC del Modelo con Grupos de Edad
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+waic_edad <- WAIC(m_age_group)
+waic_ref <- waic_edad$WAIC
+```
+
+Este valor sirve como referencia para evaluar la calidad del ajuste comparado con otros modelos más simples (sin efectos por edad) o más complejos (que integren otras covariables individuales como educación o género). En este caso el WAIC es menor al del modelo más simple y al del modelo con efectos por edad coomo variable continua, lo que indica un mejor ajuste esperado fuera de la muestra.
+
+---
+
+#### Limitaciones
+
+- La edad, aunque se modela como factor ordenado, sigue siendo una **variable observacional y fija por individuo**, por lo que no permite inferencia causal.
+- El modelo no controla por otras covariables personales relevantes, como el nivel educativo, que podría estar correlacionado con la edad y confundir parcialmente los efectos.
+- Aunque se usa una estructura jerárquica, no se han incluido efectos aleatorios por individuo (`id`), lo que podría limitar la capacidad del modelo para capturar **variabilidad intra-individual** no explicada por el escenario.
+- Se asume que los efectos de grupo son **intercambiables**, lo cual es razonable bajo incertidumbre, pero también limita la posibilidad de capturar **tendencias sistemáticas no especificadas**.
+
+---
+
+#### Alcances del Modelo
+
+Este modelo permite:
+
+- Evaluar si distintos grupos etarios muestran **patrones sistemáticos y diferenciados** en sus respuestas a dilemas morales, controlando por el contexto del escenario.
+- Introducir una dimensión individual al análisis, avanzando más allá de los efectos del diseño experimental.
+- Aplicar un enfoque jerárquico que mejora la **estabilidad del modelo** y evita sobreajuste, especialmente en grupos con menor tamaño muestral.
+- Explorar posibles **hipótesis sobre el desarrollo del razonamiento moral** a lo largo del ciclo de vida.
+
+---
+
+#### ¿Es Útil Este Análisis?
+
+Sí. Este enfoque aporta valor al integrar características individuales —como la edad agrupada— dentro del análisis de juicios morales. Aunque no permite inferencias causales, **ofrece una aproximación estructurada, regularizada y comparativa** entre grupos, que enriquece la comprensión del fenómeno. Además, representa un paso natural y metodológicamente riguroso hacia modelos jerárquicos más completos en el futuro, donde se podrían integrar también efectos por individuo o por nivel educativo.
+
+---
+
+### Distribución Estimada de Respuestas por Grupo de Edad
+
+La siguiente figura muestra cómo varía la distribución estimada de respuestas (categorías 1 a 7) en función del grupo de edad, bajo seis combinaciones distintas de las variables `action`, `contact` e `intention`. Cada panel representa una configuración específica del dilema moral, mientras que el eje horizontal representa los grupos de edad ordenados (`G1` a `G6`), y el eje vertical indica la probabilidad estimada para cada categoría.
+
+Las curvas trazadas corresponden a simulaciones extraídas de la distribución posterior del modelo. Esto permite observar no solo la tendencia central de las respuestas, sino también la **incertidumbre** y **variabilidad** estimada para cada grupo de edad en distintos escenarios. Las categorías están etiquetadas al borde derecho de cada gráfico, destacando especialmente la categoría 7, correspondiente al juicio moral más permisivo.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=6, out.width="100%", fig.align = 'center'}
+# Extraer muestras del modelo
+post_age <- extract.samples(m_age_group)
+post_age <- as.data.frame(post_age)
+
+# Grupos de edad: asumimos que hay 7 niveles (ajusta si hay más o menos)
+age_groups <- 1:6  # Índices de age_group ordenados
+
+# Combinaciones a graficar
+configs <- list(
+  list(action = 1, contact = 0, intention = 0),
+  list(action = 0, contact = 0, intention = 1),
+  list(action = 0, contact = 0, intention = 0),
+  list(action = 1, contact = 0, intention = 1),
+  list(action = 0, contact = 1, intention = 0),
+  list(action = 0, contact = 1, intention = 1)
+)
+
+titles <- c(
+  "action=1, contact=0, intention=0",
+  "action=0, contact=0, intention=1",
+  "action=0, contact=0, intention=0",
+  "action=1, contact=0, intention=1",
+  "action=0, contact=1, intention=0",
+  "action=0, contact=1, intention=1"
+)
+
+# Layout 2 filas × 3 columnas
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+# Graficar para cada combinación
+for (j in 1:length(configs)) {
+  cfg <- configs[[j]]
+  plot(1, 1, type = "n",
+       xlab = "Grupo de edad (índice)", ylab = "probabilidad",
+       xlim = range(age_groups), ylim = c(0, 1),
+       main = titles[j], xaxt = "n")
+
+  axis(1, at = age_groups, labels = paste("G", age_groups, sep=""))
+
+  pk_mean <- matrix(0, nrow = length(age_groups), ncol = 6)
+
+  for (s in 1:100) {
+    ak <- as.numeric(post_age[s, paste0("cutpoints.", 1:6)])
+    for (i in seq_along(age_groups)) {
+      age_idx <- age_groups[i]
+      phi <- post_age$bA[s] * cfg$action +
+             post_age$bI[s] * cfg$intention +
+             post_age$bC[s] * cfg$contact +
+             post_age$bAI[s] * cfg$action * cfg$intention +
+             post_age$bCI[s] * cfg$contact * cfg$intention +
+             as.numeric(post_age[s, paste0("bE.", age_idx)])
+
+      pk <- pordlogit(1:6, a = ak, phi = phi)
+      pk_mean[i, ] <- pk_mean[i, ] + pk
+
+      for (k in 1:6) {
+        lines(age_groups, pk_mean[, k] / s, col = col.alpha("#0058a8", 0.1), lwd = 2)
+      }
+    }
+  }
+
+  # Promedio final
+  pk_mean <- pk_mean / 100
+
+  for (k in 1:6) {
+    y_pos <- max(pk_mean[, k][7])
+    text(max(age_groups), y_pos - 0.03, labels = as.character(k), col = "#0058a8", cex = 0.85)
+  }
+
+  text(max(age_groups), 0.9, labels = "7", col = "#0058a8", cex = 0.85, pos = 3)
+}
+
+
+
+```
+
+Cada panel representa una configuración experimental distinta, permitiendo observar cómo varía el juicio moral entre los distintos **grupos etarios (G1–G6)**, al mantener constante el escenario del dilema. El eje vertical indica la probabilidad estimada de seleccionar cada categoría de respuesta moral (del 1 al 7), y las curvas representan simulaciones extraídas de la distribución posterior del modelo bayesiano ordinal con estructura jerárquica por grupo de edad.
+
+#### Principales observaciones:
+
+- **Concentración en categorías altas en los grupos intermedios (G3–G4):** En varios escenarios, los grupos etarios intermedios muestran mayor concentración de probabilidad en las categorías más permisivas (6 y 7), lo que sugiere una tendencia a juzgar las acciones como más aceptables en comparación con otros grupos.
+
+- **Dispersión en extremos etarios (G1 y G6):** Los grupos más jóvenes (`G1`) y los de edad más avanzada (`G6`) exhiben mayor variabilidad en sus curvas de probabilidad, lo cual puede reflejar **incertidumbre** en sus patrones de juicio moral o **heterogeneidad interna** dentro de estos grupos. Esta dispersión también puede estar influida por el menor tamaño muestral en los extremos del rango de edad.
+
+- **Efecto dominante de la intención:** En los escenarios donde `intention = 1`, se observa un desplazamiento claro y consistente hacia las categorías más altas de la escala (respuestas 6 y 7), independiente del grupo de edad. Esto confirma que la **intencionalidad del daño es el factor más influyente** en la evaluación moral, superando en efecto a la edad o a las demás variables experimentales.
+
+- **Modulación por contacto físico:** En presencia de contacto físico (`contact = 1`), se amplifica la dispersión de las respuestas entre grupos etarios. Esto sugiere que la **presencia o ausencia de contacto** modula el juicio moral de forma distinta según la etapa de vida, posiblemente debido a normas sociales internalizadas o a diferencias generacionales en la interpretación de la acción física.
+
+#### Interpretación general
+
+El análisis apoya que los juicios morales ante dilemas éticos **varían a lo largo del ciclo de vida**, pero no de forma lineal. Los grupos centrales tienden a emitir juicios más permisivos de forma más consistente, mientras que los extremos etarios presentan **mayor variabilidad** e **incertidumbre** en sus evaluaciones.
+
+El enfoque jerárquico empleado permite modelar esta estructura de forma flexible y regularizada, controlando por los efectos del escenario experimental y cuantificando la incertidumbre posterior. En conjunto, estos resultados resaltan la importancia de incorporar variables individuales —como la edad— en el estudio del razonamiento moral, y demuestran cómo su efecto puede depender críticamente del contexto en el que se realiza el juicio.
+
+
+
+### Probabilidad Estimada de Respuesta Máxima (Categoría 7)
+
+Una forma directa de interpretar el efecto de la edad sobre los juicios morales es analizar la **probabilidad de que un individuo emita la respuesta más permisiva**, es decir, una puntuación de **7 en la escala ordinal**. Esta categoría representa la menor severidad moral dentro del dilema evaluado, por lo que su análisis ofrece una lectura clara de la permisividad percibida en cada escenario.
+
+Para estimar esta probabilidad, se utilizan las muestras posteriores del modelo bayesiano ajustado. En cada iteración del modelo, se calcula la variable latente \(\phi\) como una combinación lineal de los predictores (`action`, `contact`, `intention`) y del efecto correspondiente al grupo de edad. Luego, se aplica la función de verosimilitud ordinal para obtener la probabilidad de cada categoría. En particular, la **probabilidad de la respuesta 7** se obtiene como:
+
+\[
+P(y = 7) = 1 - P(y \leq 6)
+\]
+
+donde \(P(y \leq 6)\) es la probabilidad acumulada hasta el sexto punto de corte en la escala ordinal. Este cálculo se repite para cada grupo de edad, y se resume mediante la media y un intervalo de credibilidad del 89%.
+
+La figura siguiente presenta un resumen visual de estos resultados para seis combinaciones de las variables experimentales. Cada panel muestra cómo varía la **probabilidad estimada de emitir un juicio moral severo (respuesta = 7)** en función del grupo de edad, permitiendo comparar directamente las diferencias entre tramos etarios bajo distintas condiciones del dilema moral.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=4, out.width="100%", fig.align = 'center'}
+# Escenarios definidos
+escenarios <- list(
+  list(action = 1, contact = 0, intention = 0),
+  list(action = 0, contact = 0, intention = 1),
+  list(action = 0, contact = 0, intention = 0),
+  list(action = 1, contact = 0, intention = 1),
+  list(action = 0, contact = 1, intention = 0),
+  list(action = 0, contact = 1, intention = 1)
+)
+
+# Etiquetas para cada gráfico
+titulos <- c(
+  "a=1, c=0, i=0",
+  "a=0, c=0, i=1",
+  "a=0, c=0, i=0",
+  "a=1, c=0, i=1",
+  "a=0, c=1, i=0",
+  "a=0, c=1, i=1"
+)
+
+# Índices de grupos de edad
+age_groups <- 1:6
+
+# Crear lista de dataframes de resultados por escenario
+resultados <- map2(escenarios, titulos, function(cfg, titulo) {
+  p7 <- matrix(NA, nrow = 100, ncol = length(age_groups))
+  
+  for (s in 1:100) {
+    ak <- as.numeric(post_age[s, paste0("cutpoints.", 1:6)])
+    for (i in seq_along(age_groups)) {
+      phi <- post_age$bA[s] * cfg$action +
+             post_age$bI[s] * cfg$intention +
+             post_age$bC[s] * cfg$contact +
+             post_age$bAI[s] * cfg$action * cfg$intention +
+             post_age$bCI[s] * cfg$contact * cfg$intention +
+             as.numeric(post_age[s, paste0("bE.", age_groups[i])])
+      
+      p7[s, i] <- 1 - pordlogit(6, a = ak, phi = phi)
+    }
+  }
+  
+  p7_mean <- colMeans(p7)
+  p7_lower <- apply(p7, 2, quantile, probs = 0.055)
+  p7_upper <- apply(p7, 2, quantile, probs = 0.945)
+
+  tibble(
+    GrupoEdad = factor(paste0("G", age_groups), levels = paste0("G", age_groups)),
+    Prob_Media = p7_mean,
+    Inferior = p7_lower,
+    Superior = p7_upper,
+    Escenario = titulo
+  )
+})
+
+# Combinar todos los resultados
+df_p7_all <- bind_rows(resultados)
+
+# Graficar grid 2x3
+ggplot(df_p7_all, aes(x = GrupoEdad, y = Prob_Media)) +
+  geom_point(size = 2, color = "#0058a8") +
+  geom_errorbar(aes(ymin = Inferior, ymax = Superior), width = 0.2, color = "#0058a8") +
+  facet_wrap(~ Escenario, nrow = 2) +
+  labs(
+    title = "Probabilidad estimada de respuesta = 7 por grupo de edad",
+    subtitle = "Seis combinaciones de action, contact e intention",
+    x = "Grupo de edad",
+    y = "Probabilidad de respuesta = 7"
+  ) +
+  theme_minimal()
+
+
+```
+
+#### Análisis de Resultados: Probabilidad de Respuesta Máxima (Categoría 7)
+
+La figura muestra cómo varía la **probabilidad posterior estimada de emitir un juicio moral más permisivo** (respuesta = 7) en función del grupo de edad, bajo seis combinaciones específicas de las variables `action`, `contact` e `intention`. Cada punto representa la media posterior de dicha probabilidad, acompañado por su intervalo de credibilidad al 89%.
+
+##### Principales hallazgos:
+
+- **Los grupos intermedios (G3–G5)** tienden a concentrar **la mayor probabilidad de emitir una respuesta permisiva** (categoría 7), especialmente en los escenarios con intención (`i = 1`). Esto sugiere que estos grupos presentan una **mayor disposición a aceptar moralmente la acción evaluada**, cuando hay intención involucrada.
+
+- **El grupo G6 (mayores de 60 años)** muestra una **caída en la probabilidad de permisividad** en la mayoría de los escenarios, particularmente en aquellos con contacto físico (`c = 1`). Esta diferencia con respecto a los grupos intermedios podría deberse a normas morales más conservadoras o a efectos generacionales.
+
+- En escenarios donde la **intención está ausente** (`i = 0`), las probabilidades de emitir la respuesta más permisiva son más bajas en todos los grupos, y se mantienen relativamente estables, lo que **reafirma que la intención es el principal modulador** del juicio moral.
+
+- Los **grupos más jóvenes (G1 y G2)** presentan **niveles bajos de permisividad** y, en algunos escenarios, mayores intervalos de credibilidad, lo cual sugiere una combinación de **menor aceptación moral y mayor incertidumbre** en sus decisiones.
+
+- El escenario con **intención y contacto físico** (`a = 0, c = 1, i = 1`) muestra el nivel más bajo de permisividad generalizada, destacando cómo la combinación de intención y contacto tiende a **reducir significativamente** la aceptación moral en todos los grupos.
+
+##### Conclusión general
+
+Este análisis apoya que **los juicios morales varían de manera estructurada según la edad**, y que las respuestas más permisivas tienden a concentrarse en los grupos intermedios, con menor expresión en los extremos etarios. 
+
+Asimismo, la **intención continúa siendo el factor más determinante** en la evaluación moral, modulando fuertemente la respuesta observada. La modelación jerárquica por grupo de edad permitió estimar estas diferencias de manera robusta, y el análisis centrado en la respuesta más permisiva (categoría 7) ofreció una lectura clara y accesible del efecto combinado de factores experimentales e individuales en el juicio moral.
+

@@ -1,0 +1,396 @@
+---
+title: "Métodos Analíticos: Trolley Problem"
+author: "Análisis General y EDA"
+output: html_document
+---
+
+<style>
+p {
+  text-align: justify;
+}
+</style>
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+# Cargar librerías necesarias
+library(rethinking)   # Accede al conjunto de datos 'Trolley' y funciones estadísticas del libro Statistical Rethinking
+library(ggplot2)      # Permite crear gráficos elegantes y personalizables usando gramática de gráficos
+library(dplyr)        # Facilita la manipulación de datos con funciones encadenables (pipes)
+library(tidyr)        # Permite transformar y reestructurar data frames (pivotar, desanidar, etc.)
+library(tidyverse)
+
+# Cargar datos
+data(Trolley)
+d <- Trolley
+
+# Modelo con mejor WAIC con base en las notas de Statistical Rethinking
+m11.3_ulam <- ulam(
+  alist(
+    response ~ ordered_logistic(phi, cutpoints),
+    phi <- bA * action + 
+           bI * intention + 
+           bC * contact +
+           bAI * action * intention +
+           bCI * contact * intention,
+    c(bA, bI, bC, bAI, bCI) ~ normal(0, 10),
+    cutpoints ~ normal(0, 10)
+  ),
+  data = d,
+  chains = 4,
+  cores = 4,
+  log_lik = TRUE
+)
+```
+
+### Contexto del Estudio
+
+Este análisis explora cómo ciertos factores influyen en la forma en que las personas juzgan la moralidad de escenarios hipotéticos, como el *Trolley Problem*. Las respuestas se recolectaron en una escala ordinal del 1 al 7, donde valores más altos indican mayor permisividad moral —es decir, que la acción evaluada es considerada más aceptable—, y valores más bajos representan un juicio moral más severo o condenatorio.
+
+Se modeló la probabilidad de emitir cada una de estas respuestas en función de tres variables dicotómicas:
+
+- **`intention`**: si el daño fue intencional o no.
+- **`action`**: si se realizó una acción directa o no.
+- **`contact`**: si hubo contacto físico o no.
+
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Manejo de los datos
+trolley <- d |> 
+  select(-case,-action2, -order)  # Eliminar columnas innecesarias
+
+# Información general
+n_observaciones <- nrow(trolley)
+n_individuos <- trolley |> distinct(id) |> nrow()
+
+# Distribución por sexo
+sexo <- trolley |> 
+  count(male) |> 
+  mutate(sexo = ifelse(male == 1, "Hombre", "Mujer"))
+
+# Estadísticas de edad
+resumen_edad <- summary(trolley$age)
+
+```
+
+### Exploración Descriptiva del Conjunto de Datos
+
+El análisis se llevó a cabo sobre un total de `r format(n_observaciones, big.mark = ",")` observaciones, provenientes de `r n_individuos` personas distintas. Esto confirma que cada individuo respondió 30 escenarios distintos, lo que concuerda con el diseño experimental previamente establecido.
+
+#### Características Demográficas
+
+Con respecto a la variable **sexo**, la muestra se encuentra compuesta por `r format(sexo$n[sexo$sexo == "Hombre"], big.mark = ",")` respuestas proporcionadas por hombres y `r format(sexo$n[sexo$sexo == "Mujer"], big.mark = ",")` por mujeres. Esta distribución representa aproximadamente un `r round(100 * sexo$n[sexo$sexo == "Hombre"] / sum(sexo$n))` % de participación masculina y un `r round(100 * sexo$n[sexo$sexo == "Mujer"] / sum(sexo$n))` % femenina, permitiendo un análisis balanceado entre perspectivas de género.
+
+En cuanto a la **edad** de los participantes, el rango observado va de `r resumen_edad["Min."]` a `r resumen_edad["Max."]` años. La edad promedio es de aproximadamente `r round(resumen_edad["Mean"], 1)` años, mientras que la mediana se ubica en `r resumen_edad["Median"]` años, lo cual sugiere una distribución relativamente simétrica, aunque con una ligera dispersión hacia edades mayores.
+
+A continuación se presenta un histograma que resume la distribución etaria a nivel de persona (y no de observación), agrupando en intervalos de cinco años para facilitar la interpretación:
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.align = 'center'}
+# Agrupar por id y quedarnos con una edad por persona
+edades_por_id <- trolley |> 
+  distinct(id, age)
+
+# Histograma de edades
+ggplot(edades_por_id, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "#4682B4", color = "white", boundary = 0) +
+  labs(
+    title = "Distribución de edades de los participantes (grupos de 5 años)",
+    x = "Edad",
+    y = "Número de personas"
+  ) +
+  theme_minimal()
+
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Definir orden lógico de niveles educativos
+niveles_ordenados <- c(
+  "Elementary School",
+  "Middle School",
+  "Some High School",
+  "High School Graduate",
+  "Some College",
+  "Bachelor's Degree",
+  "Master's Degree",
+  "Graduate Degree"
+)
+
+# Reordenar factor
+trolley <- trolley |> 
+  mutate(edu = factor(edu, levels = niveles_ordenados))
+
+# Reordenar factor y contar con formato
+nivel_educativo_ordenado <- trolley |> 
+  mutate(edu = factor(edu, levels = niveles_ordenados)) |>
+  count(edu) |> 
+  arrange(edu) |> 
+  mutate(n = format(n, big.mark = ","))
+
+```
+
+#### Nivel Educativo de los Participantes
+
+La distribución de respuestas según el nivel educativo reportado por los encuestados se muestra a continuación. Esta variable es especialmente útil para contextualizar los juicios morales en función del capital educativo, el cual puede influir en normas, razonamientos éticos y sensibilidad hacia los dilemas presentados.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Mostrar tabla formateada
+knitr::kable(nivel_educativo_ordenado, 
+             col.names = c("Nivel educativo", "Número de respuestas"),
+             caption = "Distribución de respuestas por nivel educativo")
+
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Combinaciones únicas de action-contact-intention
+combinaciones <- trolley |> 
+  count(action, contact, intention, sort = TRUE) |>
+  mutate(n = format(n, big.mark = ","))
+
+n_combinaciones <- nrow(combinaciones)
+```
+
+
+#### Combinaciones de Escenarios y Frecuencia de Respuestas
+
+Además de las variables individuales de cada participante, el conjunto de datos incluye combinaciones experimentales que varían tres factores claves en los dilemas morales: `action`, `contact` e `intention`.
+
+En total, se identificaron `r n_combinaciones` combinaciones distintas de estos factores en el diseño del estudio. A continuación se muestra la distribución de observaciones por cada combinación:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(combinaciones, col.names = c("Action", "Contact", "Intention", "Frecuencia"),
+             align = c("l", "l", "l", "l"),
+             caption = "Número de observaciones por combinación de variables del escenario")
+
+```
+
+Esta distribución revela que algunos escenarios fueron más frecuentes que otros. Por ejemplo, la combinación `action = 1`, `contact = 0`, `intention = 0` es la más común, mientras que combinaciones con contacto tienden a ser menos frecuentes.
+
+#### Número de Respuestas por Participante
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Respuestas por individuo (id)
+respuestas_por_id <- trolley |> 
+  count(id)
+
+resumen_id <- summary(respuestas_por_id$n)
+```
+
+Dado que cada participante fue expuesto a múltiples escenarios, es importante entender cuántas respuestas se registraron por individuo. Todos los participantes respondieron exactamente `r resumen_id[["Min."]]` dilemas, lo que sugiere un diseño experimental equilibrado. Esta estructura valida el uso del identificador (`id`) como agrupador.
+
+
+### Detalles Metodológicos del Modelo Bayesiano Ordinal
+
+#### Fundamento del Enfoque
+
+El modelo fue ajustado dentro del **marco de la estadística bayesiana**, utilizando el motor de inferencia `Stan` a través de la interfaz `ulam()` del paquete `rethinking` en R. Este enfoque permite modelar la incertidumbre de manera explícita, obteniendo distribuciones posteriores de los parámetros en lugar de estimaciones puntuales.
+
+Se utilizó un **modelo ordinal** apropiado para variables de respuesta en escala, como en este caso, donde las personas califican situaciones hipotéticas en una escala del 1 al 7 en función de su juicio moral. Este tipo de modelo asume que existe una **variable latente continua de moralidad** (no observada directamente) y que las respuestas observadas reflejan cortes sobre dicha variable.
+
+En este caso, la variable latente representa la **aceptabilidad moral** de la acción evaluada. Una mayor puntuación en la escala indica una percepción más permisiva (mayor aceptación), mientras que una puntuación baja refleja un juicio moral severo (mayor condena).
+
+---
+
+#### Estructura del Modelo
+
+El modelo especificado es una **regresión ordinal con función de enlace logística**, donde la probabilidad de que una respuesta caiga en cada una de las categorías depende de un valor latente $\phi$ (phi), definido como una combinación lineal de predictores:
+
+\[
+\text{Pr}(Y \leq k) = \text{logit}^{-1}(a_k - \phi)
+\]
+
+donde:
+
+- \( Y \) es la respuesta ordinal observada (de 1 a 7),
+- \( a_k \) son los *cutpoints* o umbrales que dividen la escala latente,
+- \( \phi \) es el valor continuo que representa la posición moral del individuo en esa situación.
+
+La expresión para \( \phi \) incorpora:
+
+- Efectos principales: `action`, `intention`, `contact`.
+- Interacciones: `action × intention` y `contact × intention`.
+
+\[
+\phi = \beta_A \cdot \text{action} + \beta_I \cdot \text{intention} + \beta_C \cdot \text{contact} + \beta_{AI} \cdot (\text{action} \cdot \text{intention}) + \beta_{CI} \cdot (\text{contact} \cdot \text{intention})
+\]
+
+---
+
+#### Ajuste del Modelo con `ulam()`
+
+Se empleó la función `ulam()` para declarar el modelo de manera explícita. Algunas características clave del ajuste:
+
+- Se utilizaron **prioris débilmente informativas** para los coeficientes, promoviendo regularización sin imponer supuestos fuertes.
+- Se utilizaron muestras MCMC para obtener distribuciones posteriores de cada parámetro.
+- Se extrajeron predicciones generadas a partir de estas muestras para visualizar la incertidumbre en las probabilidades estimadas.
+- Se graficaron **curvas por categoría** (1 a 7) para cada combinación de predictores, mostrando tanto la tendencia media como la variabilidad posterior.
+
+---
+
+#### Justificación del Modelo Elegido
+
+Este modelo ordinal fue elegido por las siguientes razones:
+
+1. **Adecuación a la naturaleza de los datos**: Las respuestas están en una escala ordinal, por lo que modelos como regresión lineal o binomial no son apropiados.
+2. **Captura de interacciones morales**: La incorporación de interacciones entre `intention`, `action` y `contact` permite reflejar cómo el juicio moral se modula de manera conjunta y no simplemente aditiva.
+3. **Inferencia completa e intuitiva**: El enfoque bayesiano permite no solo estimar efectos, sino también cuantificar la incertidumbre, lo que da lugar a interpretaciones más robustas.
+4. **Visualización rica**: Al graficar probabilidades por categoría y combinación de variables, el modelo facilita una comprensión accesible del impacto de los predictores sobre las decisiones morales.
+
+---
+
+#### Evaluación del Ajuste del Modelo
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+waic_base <- WAIC(m11.3_ulam)
+waic_ref <- waic_base$WAIC
+```
+
+Se calculó el WAIC (Watanabe-Akaike Information Criterion) para este modelo, obteniendo un valor de: **`r format(waic_ref, big.mark = ",")`**
+
+Este valor servirá como punto de comparación para evaluar modelos alternativos que incluyan covariables individuales (como edad, educación o género) o estructuras jerárquicas más complejas. Un menor valor de WAIC indicará mejor ajuste predictivo en balance con la complejidad del modelo.
+
+---
+
+#### Limitaciones y Precauciones
+
+Si bien el modelo ofrece una representación detallada de los juicios morales, es importante señalar:
+
+- Los datos provienen de una **encuesta observacional**, lo que implica que los efectos estimados deben interpretarse como asociaciones estructuradas más que como efectos causales confirmados.
+- Es probable que exista **sesgo de selección** (quién responde la encuesta), lo que debe ser considerado al generalizar los resultados.
+
+---
+
+En resumen, el modelo ordinal bayesiano ajustado con `ulam()` permitió representar adecuadamente la estructura de los datos, modelar interacciones complejas entre variables relevantes, y producir inferencias visuales e interpretables que enriquecen la comprensión del juicio moral en dilemas éticos.
+
+### Análisis de Resultados del Modelo Ordinal
+
+A continuación se presenta una matriz de gráficos de 3 filas por 3 columnas, donde cada fila muestra cómo varía la distribución de respuestas en la escala moral (del 1 al 7) cuando uno de los factores (`intention`, `action`, `contact`) cambia de 0 a 1. En cada gráfico, los otros dos factores se mantienen constantes. Esto permite visualizar el **efecto marginal** de cada predictor bajo diferentes condiciones contextuales.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height=8, out.width="100%", fig.align = 'center'}
+# Extraer muestras del modelo
+post <- extract.samples(m11.3_ulam)
+post <- as.data.frame(post)
+
+# Configurar layout 3x3
+par(mfrow = c(3, 3), mar = c(4, 4, 3, 1))
+
+# Función auxiliar para graficar cada panel
+graficar_panel <- function(xvar, xvals, fixed_vals, title) {
+  plot(1, 1, type = "n",
+       xlab = xvar, ylab = "probability",
+       xlim = range(xvals), ylim = c(0, 1),
+       main = title, xaxp = c(0, 1, 1), yaxp = c(0, 1, 2))
+
+  pk_mean <- matrix(0, nrow = length(xvals), ncol = 6)
+
+  for (s in 1:100) {
+    ak <- as.numeric(post[s, paste0("cutpoints.", 1:6)])
+
+    phi <- switch(
+      xvar,
+      "intention" = post$bA[s] * fixed_vals$action +
+                    post$bI[s] * xvals +
+                    post$bC[s] * fixed_vals$contact +
+                    post$bAI[s] * fixed_vals$action * xvals +
+                    post$bCI[s] * fixed_vals$contact * xvals,
+      "action" = post$bA[s] * xvals +
+                 post$bI[s] * fixed_vals$intention +
+                 post$bC[s] * fixed_vals$contact +
+                 post$bAI[s] * xvals * fixed_vals$intention +
+                 post$bCI[s] * fixed_vals$contact * fixed_vals$intention,
+      "contact" = post$bA[s] * fixed_vals$action +
+                  post$bI[s] * fixed_vals$intention +
+                  post$bC[s] * xvals +
+                  post$bAI[s] * fixed_vals$action * fixed_vals$intention +
+                  post$bCI[s] * xvals * fixed_vals$intention
+    )
+
+    pk <- pordlogit(1:6, a = ak, phi = phi)
+    pk_mean <- pk_mean + pk
+
+    for (i in 1:6) {
+      lines(xvals, pk[, i], col = col.alpha("#0058a8", 0.1), lwd = 2)
+    }
+  }
+
+  # Promedio
+  pk_mean <- pk_mean / 100
+
+  for (k in 1:6) {
+    y_pos <- max(pk_mean[, k])
+    text(max(xvals), y_pos - 0.03, labels = as.character(k), col = "#0058a8", cex = 0.85)
+  }
+
+  text(max(xvals), 0.95, labels = "7", col = "#0058a8", cex = 0.85, pos = 3)
+}
+
+# Fila 1: Intention en eje X
+graficar_panel("intention", 0:1, list(action = 0, contact = 0), "action=0, contact=0")
+graficar_panel("intention", 0:1, list(action = 1, contact = 0), "action=1, contact=0")
+graficar_panel("intention", 0:1, list(action = 0, contact = 1), "action=0, contact=1")
+
+# Fila 2: Action en eje X
+graficar_panel("action", 0:1, list(intention = 0, contact = 0), "intention=0, contact=0")
+graficar_panel("action", 0:1, list(intention = 1, contact = 0), "intention=1, contact=0")
+graficar_panel("action", 0:1, list(intention = 0, contact = 1), "intention=0, contact=1")
+
+# Fila 3: Contact en eje X
+graficar_panel("contact", 0:1, list(action = 0, intention = 0), "action=0, intention=0")
+graficar_panel("contact", 0:1, list(action = 1, intention = 0), "action=1, intention=0")
+graficar_panel("contact", 0:1, list(action = 0, intention = 1), "action=0, intention=1")
+
+```
+
+
+##### Fila 1 – Eje X: `intention`
+
+Esta fila muestra cómo cambia la distribución de respuestas cuando la intención pasa de 0 a 1, en diferentes combinaciones de `action` y `contact`.
+
+**Conclusiones:**
+
+- La pendiente de las curvas es más pronunciada cuando **hay contacto** (`contact = 1`), lo que sugiere que la intención tiene un **efecto más fuerte** cuando también hay contacto físico.
+- Cuando no hay acción ni contacto (`action = 0`, `contact = 0`), la intención tiene **poco o ningún efecto** sobre la evaluación moral.
+
+---
+
+##### Fila 2 – Eje X: `action`
+
+Aquí se evalúa cómo cambia la severidad moral al pasar de omisión a acción.
+
+**Conclusiones:**
+
+- El impacto de actuar es **mayor cuando hay intención detrás**.
+- En ausencia de intención, actuar o no tiene poco efecto sobre la percepción moral.
+
+---
+
+##### Fila 3 – Eje X: `contact`
+
+Esta fila muestra cómo cambia la respuesta moral cuando hay contacto físico, bajo diferentes combinaciones de `action` e `intention`.
+
+**Conclusiones:**
+
+- El contacto físico **eleva la severidad del juicio moral** cuando también hay intención (`intention = 1`).
+- Cuando no hay intención, el efecto del contacto es **marginal o nulo**.
+
+---
+
+#### Síntesis General
+
+- Los factores `intention`, `action` y `contact` **no operan de forma aislada** sino que sus efectos se potencian entre sí.
+- Las respuestas más permisivas (valor 7) aparecen especialmente en combinaciones donde la intención está ausente, mientras que combinaciones que incluyen intención tienden a desplazar las respuestas hacia valores más bajos, reflejando una menor aceptación moral.
+- Este patrón es coherente con las teorías del razonamiento moral que sostienen que el **motivo y el involucramiento físico** son componentes centrales del juicio ético.
+
+---
+
+#### Relevancia para la Inferencia Causal
+
+Este análisis ejemplifica cómo un modelo bayesiano ordinal puede emplearse para hacer inferencias estructuradas, incluso en contextos donde no hay manipulación experimental directa (por ser datos observacionales).
+
+El modelo permite:
+
+- Explorar efectos marginales y condicionales.
+- Visualizar la estructura ordinal completa de las respuestas.
+- Inferir cómo ciertas combinaciones de condiciones intensifican el juicio moral.
+
+Recalcamos que aunque no se pueda afirmar causalidad concluyente por tratarse de una encuesta, este enfoque revela **patrones robustos** que son consistentes con teorías de razonamiento moral.
