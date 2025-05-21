@@ -662,8 +662,8 @@ En conjunto, el modelo refuerza la idea de que los juicios morales ante dilemas 
 
 ## 4) Modelos de género sobre respuesta
 
-0. Preparación de datos
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Preparación de datos
+```{r, message=FALSE, warning=FALSE}
 library(rethinking)
 data(Trolley)
 d <- Trolley
@@ -671,8 +671,8 @@ d$A <- standardize(d$age)  # Estandarizar edad
 
 ```
 
-1. Modelo sencillo incluyendo sólo género
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Modelo sencillo incluyendo sólo género
+```{r, message=FALSE, warning=FALSE}
 m1g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -686,7 +686,7 @@ m1g <- ulam(
 ```
 
 Análisis
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 precis(m1g, depth = 2)
 ```
 
@@ -694,8 +694,8 @@ precis(m1g, depth = 2)
 creemos que los hombres de la muestra tienden a juzgar más permisivo intervenir.
 
 
-2: Añadir control por intención y acción
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Añadir control por intención y acción
+```{r, message=FALSE, warning=FALSE}
 m2g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -710,7 +710,7 @@ m2g <- ulam(
 ```
 
 Análisis
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 precis(m2g, depth = 2)
 compare(m1g, m2g)
 ```
@@ -718,8 +718,8 @@ compare(m1g, m2g)
 - Al controlar por contexto moral obtenemos un intervalo de confianza muy parecido de 0.50 a 0.61
 El modelo tiene menor WAIC por lo que decimos que el ajuste mejora un poco
 
-3: Añadir edad (estandarizada)
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Añadir edad (estandarizada)
+```{r, message=FALSE, warning=FALSE}
 m3g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -733,15 +733,42 @@ m3g <- ulam(
 ```
 
 🔍 Análisis:
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 precis(m3g, depth = 2)
 compare(m1g, m2g, m3g)
 ```
 
+```{r}
+# Extraer y seleccionar coeficientes
+posterior_samples_m3g <- extract.samples(m3g)
+draws_df <- data.frame(
+  Acción = posterior_samples_m3g$bA,
+  Intención = posterior_samples_m3g$bI,
+  Género = posterior_samples_m3g$bM,
+  Edad = posterior_samples_m3g$bAge
+)
+
+# Convertir a formato compatible
+draws_df <- as_draws_df(draws_df)
+
+# Graficar con estilo limpio
+color_scheme_set("blue")  # opcional: puedes probar con "viridis", "teal", etc.
+mcmc_areas(
+  draws_df,
+  prob = 0.89
+) +
+  ggplot2::labs(
+    title = "Distribuciones posteriores de los coeficientes",
+    x = "Valor estimado",
+    y = NULL
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+```
+
 - `bAge = -0.06`: La edad tiene un efecto pequeño negativo, a mayor edad, ligeramente menor aprobación moral. Personas mayores podrían ser más conservadoras en sus juicios.
 
-4: Añadir interacciones entre género, intención y acción
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+### Añadir interacciones entre género, intención y acción
+```{r, message=FALSE, warning=FALSE}
 m4g <- ulam(
   alist(
     response ~ dordlogit(phi, cutpoints),
@@ -762,13 +789,41 @@ m4g <- ulam(
 
 
 Análisis completo:
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 precis(m4g, depth = 2)
 compare(m1g, m2g, m3g, m4g)
 ```
 
+```{r}
+# Extraer y seleccionar coeficientes
+posterior_samples_m4g <- extract.samples(m4g)
+draws_df <- data.frame(
+  Acción = posterior_samples_m4g$bA,
+  Intención = posterior_samples_m4g$bI,
+  Género = posterior_samples_m4g$bM,
+  Edad = posterior_samples_m4g$bAge,
+  Género-intención = posterior_samples_m4g$bMI,
+  Género-acción = posterior_samples_m4g$bMA
+)
 
-# Resultados del modelo
+# Convertir a formato compatible
+draws_df <- as_draws_df(draws_df)
+
+# Graficar con estilo limpio
+color_scheme_set("blue")  # opcional: puedes probar con "viridis", "teal", etc.
+mcmc_areas(
+  draws_df,
+  prob = 0.89
+) +
+  ggplot2::labs(
+    title = "Distribuciones posteriores de los coeficientes",
+    x = "Valor estimado",
+    y = NULL
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+```
+
+### Resultados del modelo
 
 | Parámetro   | Media | Interpretación                                                      |
 | ----------- | ----- | ------------------------------------------------------------------- |
@@ -779,13 +834,13 @@ compare(m1g, m2g, m3g, m4g)
 | `bMI`       | –0.11 | Hombres castigan más que mujeres cuando el daño es **intencional**. |
 | `bMA`       | –0.16 | Hombres castigan más que mujeres cuando la acción es **directa**.   |
 
-# Interpretación General
+### Interpretación General
 
 Género tiene un efecto significativo: los hombres son más permisivos moralmente en general (bM > 0).
 Sin embargo, esa permisividad disminuye en situaciones donde la acción es intencional o directa (bMI, bMA < 0).
 Este modelo sugiere que el contexto moral modula cómo el género afecta los juicios.
 
-# Conclusión
+### Conclusión
 
 Aunque los hombres son en promedio más permisivos frente a dilemas morales, su permisividad disminuye más que la de las mujeres cuando el daño es intencional o la acción es directa. Esto sugiere que el efecto del género no es uniforme, sino que depende del tipo de dilema.
 
